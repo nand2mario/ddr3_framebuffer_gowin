@@ -3,8 +3,8 @@
 This is an example of using DDR3 memory as a frame buffer. The project,
 
 * Outputs 720p HDMI
-* Maintains a frame buffer of user specified dimensions (640x480 here) in DDR3-800.
-* Uses Gowin IP for DDR3 memory controller.
+* Maintains a frame buffer of user specified dimensions (640x480 here) in DDR3.
+* Uses Gowin IP for DDR3 memory controller. DDR3 is running at 297Mhz, 4x 720 pixel clock of 74.25Mhz (i.e. DDR3-594). Per [Micron datasheet](https://forum.digilent.com/topic/25816-should-max-clock-period-be-min-clock-period/), DDR3 lowest frequency is 300Mhz. However this is working fine for me...
 * Streams data from DDR3 32 pixels ahead and fills a 64 pixel buffer, to hide DDR3 and controller latency. The controller's read latency is about 22 cycles in my testing.
 * Upscales the frame buffer to 720p while maintaining aspect ratio.
 * As a demo, updates the frame buffer at 60fps showing a moving green block.
