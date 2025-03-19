@@ -1,6 +1,6 @@
 # DDR3 frame buffer for Sipeed Tang Console
 
-This is an example of using DDR3 memory as a frame buffer. The project,
+This is an example of using DDR3 memory as a frame buffer that also does upscaling. The project,
 
 * Outputs 720p HDMI
 * Maintains a frame buffer of user specified dimensions (640x480 here) in DDR3.
