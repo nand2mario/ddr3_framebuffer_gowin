@@ -193,7 +193,7 @@ IO_PORT "leds[7]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
 // IO_LOC "error" A8;
 // IO_PORT "error" IO_TYPE=LVCMOS15 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=1.5;
 
-INS_LOC "u_ddr3/gw3_top/u_ddr_phy_top/u_dll" DDRDLLM_BL;
-// INS_LOC "u_ddr3/gw3_top/u_ddr_phy_top/fclkdiv" LEFTSIDE[3];
-INS_LOC "pll_ddr3_inst/PLLA_inst" PLL_L[0];
-// SET_PARAM "u_ddr3/gw3_top/u_ddr_phy_top/u_dll" CLKIN_SEL=CLKIN4;
+//INS_LOC "fb/u_ddr3/gw3_top/u_ddr_phy_top/u_dll" DDRDLLM_BL;
+// INS_LOC "fb/u_ddr3/gw3_top/u_ddr_phy_top/fclkdiv" LEFTSIDE[3];
+//INS_LOC "fb/pll_ddr3_inst/PLLA_inst" PLL_L[0];
+// SET_PARAM "fb/u_ddr3/gw3_top/u_ddr_phy_top/u_dll" CLKIN_SEL=CLKIN4;

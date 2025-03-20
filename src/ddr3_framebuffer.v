@@ -19,8 +19,8 @@
 //   https://projectf.io/posts/video-timings-vga-720p-1080p/#hd-1280x720-60-hz
 // - Pixels are read from DDR3 32 pixels in advance, as DDR3 controller's read latency 
 //   is about 22 cycles.
-//   x                                0  4  8   ...   FB_WIDTH-36 ... FB_WIDTH
-//   prefetch  0  4  8 12 16 20 24 28 32 36 40        FB_WIDTH-4
+//   x                                0  4  8   ...   WIDTH-36 ... WIDTH
+//   prefetch  0  4  8 12 16 20 24 28 32 36 40        WIDTH-4
 // - Writes are handled in 4 pixel chunks too. Whenever we have 4 pixels
 //   accumulated, we write them to DDR3. Reading takes precedence over writing.
 module ddr3_framebuffer #(
@@ -31,7 +31,11 @@ module ddr3_framebuffer #(
                                      // height is fixed at 720
 )(
     input               clk_27,      // 27Mhz input clock
+    input               pll_lock_27,
+    input               rst_n,
     output              clk_out,     // 74.25Mhz pixel clock. could be used by user logic
+    output              ddr_rst,     // output reset signal for clk_out
+    output              init_calib_complete,
 
     // Framebuffer interface
     input               clk,         // any clock <= 74.25Mhz (or `clk_out`)
@@ -67,24 +71,11 @@ module ddr3_framebuffer #(
 
 /////////////////////////////////////////////////////////////////////
 // Clocks
-
-reg rst_n = 0;
-reg [15:0] rst_cnt = 16'hffff;
-
-always @(posedge clk_g) begin
-    rst_cnt <= rst_cnt == 0 ? 0: rst_cnt - 1;
-    if (rst_cnt == 0 && !key)
-        rst_n <= 1;
-end
-
-wire clk27;
 wire hclk, hclk5;
 wire memory_clk;
 wire clk_x1;
-wire pll_lock_27;
+assign clk_out = clk_x1;
 wire pll_lock;
-wire ddr_rst;
-wire init_calib_complete;
 
 // dynamic reconfiguration port from DDR controller to framebuffer PLL
 reg wr;     // for mDRP
@@ -103,9 +94,9 @@ pll_ddr3 pll_ddr3_inst(
     .clkout0(), 
 //    .clkout1(), 
     .clkout2(memory_clk), 
-    .clkin(clk27), 
+    .clkin(clk_27), 
     .reset(~pll_lock_27),
-    .mdclk(clk_g), 
+    .mdclk(clk_27), 
     .mdopc(mdrp_op),        // 0: nop, 1: write, 2: read
     .mdainc(mdrp_inc),      // increment register address
     .mdwdi(mdrp_wdata),     // data to be written
@@ -122,7 +113,7 @@ pll_hdmi pll_hdmi_inst(
 reg mdrp_wr;
 reg [7:0] pll_stop_count;
 pll_mDRP_intf u_pll_mDRP_intf(
-    .clk(clk_g),
+    .clk(clk_27),
     .rst_n(1'b1),
     .pll_lock(pll_lock),
     .wr(mdrp_wr),
@@ -132,15 +123,13 @@ pll_mDRP_intf u_pll_mDRP_intf(
     .mdrp_rdata(mdrp_rdata)
 );    
 
-always@(posedge clk_g) begin
+always@(posedge clk_27) begin
     pll_stop_r <= pll_stop;
     mdrp_wr <= pll_stop ^ pll_stop_r;
     if (pll_stop_r && !pll_stop && pll_stop_count != 8'hff) begin
         pll_stop_count <= pll_stop_count + 1;
     end
 end
-
-assign leds = ~{7'b0, init_calib_complete};
 
 /////////////////////////////////////////////////////////////////////
 // DDR3 controller
@@ -170,7 +159,7 @@ wire           app_ref_ack;
 DDR3_Memory_Interface_Top u_ddr3 (
     .memory_clk      (memory_clk),
     .pll_stop        (pll_stop),
-    .clk             (clk_g),
+    .clk             (clk_27),
     .rst_n           (rst_n),   //rst_n
     //.app_burst_number(0),
     .cmd_ready       (app_rdy),
@@ -264,16 +253,10 @@ ELVDS_OBUF tmds_bufds [3:0] (
 // 720p Framebuffer
 // And a moving block as test pattern
 
-localparam FB_SIZE = FB_WIDTH * FB_HEIGHT;
+localparam FB_SIZE = WIDTH * HEIGHT;
 localparam X_START = (1280-DISP_WIDTH)/2;
 localparam X_END = (1280+DISP_WIDTH)/2;
-localparam RENDER_DELAY = 74_250_000 * 8 / FB_WIDTH / FB_HEIGHT / 60;   // 32
-
-// RGB5
-localparam GREY = 16'b0_10000_10000_10000;
-localparam RED = 16'b1_11111_00000_00000;
-localparam GREEN = 16'b0_00000_11111_00000;
-localparam BLUE = 16'b0_00000_00000_11111;
+localparam RENDER_DELAY = 74_250_000 * 8 / WIDTH / HEIGHT / 60;   // 32
 
 reg [7:0] cursor_x, cursor_y;   // a green 8x8 block on grey background for demo
 reg [7:0] cursor_delay;         // 32 cycles per write
@@ -288,19 +271,19 @@ reg read_pixels_ack;
 reg [$clog2(FB_SIZE)-1:0] rd_addr;
 reg prefetch;                   // will start prefetch next cycle
 reg [10:0] prefetch_x;
-reg [$clog2(DISP_WIDTH+FB_WIDTH)-1:0] prefetch_x_cnt;
-reg [$clog2(720+FB_HEIGHT)-1:0] prefetch_y_cnt;
+reg [$clog2(DISP_WIDTH+WIDTH)-1:0] prefetch_x_cnt;
+reg [$clog2(720+HEIGHT)-1:0] prefetch_y_cnt;
 reg [$clog2(FB_SIZE-1)-1:0] prefetch_addr_line;   // current line to prefetch
 
 reg [COLOR_BITS-1:0] pixels [0:31];       // buffer to 32 pixels
-reg [$clog2(FB_WIDTH)-1:0] ox;
-reg [$clog2(FB_HEIGHT)-1:0] oy;
-reg [$clog2(DISP_WIDTH+FB_WIDTH)-1:0] xcnt;
-reg [$clog2(720+FB_HEIGHT)-1:0] ycnt;
+reg [$clog2(WIDTH)-1:0] ox;
+reg [$clog2(HEIGHT)-1:0] oy;
+reg [$clog2(DISP_WIDTH+WIDTH)-1:0] xcnt;
+reg [$clog2(720+HEIGHT)-1:0] ycnt;
 
 // Framebuffer update - accumulate 4 pixels and then send to DDR3
-reg [$clog2(FB_WIDTH)-1:0] b_x;
-reg [$clog2(FB_HEIGHT)-1:0] b_y;
+reg [$clog2(WIDTH)-1:0] b_x;
+reg [$clog2(HEIGHT)-1:0] b_y;
 reg [COLOR_BITS-1:0] b_data [0:3];      // data buffer for 4 pixels
 reg b_vsync_toggle, b_vsync_toggle_r, b_vsync_toggle_rr;
 reg b_data_toggle, b_data_toggle_r, b_data_toggle_rr;
@@ -344,9 +327,9 @@ always @(posedge clk_x1) begin
                 wr_y <= wr_y + 1;
             end
             if (wr_x[1:0] == 3) begin
-                wr_addr <= wr_y * FB_WIDTH + {wr_x[10:2], 1'b0};
-                app_wdf_data <= {(32-COLOR_BITS){1'b0}, b_data[3], (32-COLOR_BITS){1'b0}, b_data[2], 
-                                 (32-COLOR_BITS){1'b0}, b_data[1], (32-COLOR_BITS){1'b0}, b_data[0]};
+                wr_addr <= wr_y * WIDTH + {wr_x[9:2], 2'b0};
+                app_wdf_data <= {(32-COLOR_BITS)'(1'b0), b_data[3], (32-COLOR_BITS)'(1'b0), b_data[2], 
+                                 (32-COLOR_BITS)'(1'b0), b_data[1], (32-COLOR_BITS)'(1'b0), b_data[0]};
                 write_pixels_req <= ~write_pixels_req;      // execute write
             end
         end
@@ -354,7 +337,7 @@ always @(posedge clk_x1) begin
 end
 
 // upscaling and output RGB
-reg [$clog2(FB_WIDTH)-1:0] ox_r;
+reg [$clog2(WIDTH)-1:0] ox_r;
 always @(posedge clk_x1) begin
     if (ddr_rst) begin
         ox <= 0; oy <= 0; xcnt <= 0; ycnt <= 0;
@@ -389,7 +372,7 @@ always @(posedge clk_x1) begin
 end
 
 // prefetch timings
-localparam PREFETCH_DELAY = 32 * DISP_WIDTH / FB_WIDTH;     // "upscaled" delay of 32 pixels, 48
+localparam PREFETCH_DELAY = 32 * DISP_WIDTH / WIDTH;     // "upscaled" delay of 32 pixels, 48
 // X_START is 160
 
 generate 
@@ -491,31 +474,17 @@ always @(posedge clk_x1) begin
     // end
 end
 
+
 // Convert color to RGB888
-generate
-if (COLOR_BITS == 12) begin
-    function [23:0] torgb(input [11:0] pixel);
-        torgb = {pixel[11:8], 4'b0, pixel[7:4], 4'b0, pixel[3:0], 4'b0};
-    endfunction
-end else if (COLOR_BITS == 15) begin
-    function [23:0] torgb(input [14:0] pixel);
-        torgb = {pixel[14:11], 3'b0, pixel[10:7], 3'b0, pixel[6:3], 3'b0};
-    endfunction
-end else if (COLOR_BITS == 18) begin
-    function [23:0] torgb(input [17:0] pixel);
-        torgb = {pixel[17:14], 2'b0, pixel[13:10], 2'b0, pixel[9:6], 2'b0};
-    endfunction
-end else if (COLOR_BITS == 21) begin
-    function [23:0] torgb(input [20:0] pixel);
-        torgb = {pixel[20:17], 1'b0, pixel[16:13], 1'b0, pixel[12:9], 1'b0};
-    endfunction
-end else if (COLOR_BITS == 24) begin
-    function [23:0] torgb(input [23:0] pixel);
-        torgb = pixel;
-    endfunction
-end else begin
-    $error("Unsupported color bits");
-end
-endgenerate
+function [23:0] torgb(input [23:0] pixel);
+    case (COLOR_BITS)
+    12: torgb = {pixel[11:8], 4'b0, pixel[7:4], 4'b0, pixel[3:0], 4'b0};
+    15: torgb = {pixel[14:10], 3'b0, pixel[9:5], 3'b0, pixel[4:0], 3'b0};
+    18: torgb = {pixel[17:12], 2'b0, pixel[11:6], 2'b0, pixel[5:0], 2'b0};
+    21: torgb = {pixel[20:14], 1'b0, pixel[13:7], 1'b0, pixel[6:0], 1'b0};
+    24: torgb = pixel;
+    default: torgb = 24'hbabeef;
+    endcase
+endfunction
 
 endmodule
