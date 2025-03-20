@@ -1,32 +1,40 @@
 // DDR3-backed framebuffer for Tang Mega 60K and Tang Console 60K
 // nand2mario, March 2025
 //
-// - Goal: a framebuffer of any size smaller than 1280x720. it is automatically
-//   upscaled to 1280x720 and displayed on HDMI. to make things simpler,
-//   each pixel is at most 16 bits (so at most RGB5 for now).
-// - Gowin DDR3 controller read latency is about 22 cycles. each read yields
-//   4 pixels (8 bytes).
+// - A framebuffer of any size smaller than 1280x720, backed by a single 16-bit 
+//   DDR3 chip. The image is automatically upscaled to 1280x720 and displayed on HDMI.
+// - Color depth supported: 12, 15, 18, and 24 bits.
+// - Dynamic change of framebuffer size is supported. After change the upscaling
+//   logic will adapt to the new size.
+// - Image is updated by vsync (`fb_vsync`) and then streaming every pixel (`fb_data` 
+//   and `fb_we`).
+// - Resource usage: 16 BRAMs, ~3000 LUTs, ~3000 REGs, including DDR3 and HDMI IPs.
+//
+// Internals,
+// - Gowin DDR3 controller IP is used to access DDR3. Accesses are done in 4 pixel 
+//   chunks (8x 16-bit words). Each pixel is max 32 bits.
 // - 720p timings: 
 //      1650=1280 + 110(front porch) + 40(sync) + 220(back porch)
 //      750 =720  +   5(front porch) +  5(sync)  + 20(back porch)
 //   https://projectf.io/posts/video-timings-vga-720p-1080p/#hd-1280x720-60-hz
-// - Pixels are read from DDR3 32 pixels in advance.
+// - Pixels are read from DDR3 32 pixels in advance, as DDR3 controller's read latency 
+//   is about 22 cycles.
 //   x                                0  4  8   ...   FB_WIDTH-36 ... FB_WIDTH
 //   prefetch  0  4  8 12 16 20 24 28 32 36 40        FB_WIDTH-4
-// - writes are handled in 4 pixel chunks too. whenever we have 4 pixels
-//   accumulated, we write them to DDR3. reading takes precedence over writing.
+// - Writes are handled in 4 pixel chunks too. Whenever we have 4 pixels
+//   accumulated, we write them to DDR3. Reading takes precedence over writing.
 module ddr3_framebuffer #(
-    parameter WIDTH = 640,          // multiples of 4
-    parameter HEIGHT = 480,
-    parameter COLOR_BITS = 18,      // RGB666
-    parameter DISP_WIDTH = 960      // If < 1280, frame is centered with black bars on the sides.
-                                    // height is fixed at 720
+    parameter WIDTH = 640,           // multiples of 4
+    parameter HEIGHT = 480, 
+    parameter COLOR_BITS = 18,       // RGB666
+    parameter DISP_WIDTH = 960       // If < 1280, frame is centered with black bars on the sides.
+                                     // height is fixed at 720
 )(
     input               clk_27,      // 27Mhz input clock
     output              clk_out,     // 74.25Mhz pixel clock. could be used by user logic
 
     // Framebuffer interface
-    input               clk,         // any logic clock, also fine to use clk_out
+    input               clk,         // any clock <= 74.25Mhz (or `clk_out`)
     input [10:0]        fb_width,    // actual width of the framebuffer
     input [9:0]         fb_height,   // actual height of the framebuffer
     input               fb_vsync,    // vertical sync signal
