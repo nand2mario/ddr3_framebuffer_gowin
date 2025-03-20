@@ -14,6 +14,6 @@ Some implementation details,
 
 Resource usage: ~3400 LUTs, ~4200 REGs, 16 BRAMs
   
-It works on the Sipeed Tang Console board (should work on Tang Mega 60K or other boards with minor changes). When running the demo project looks like this (a moving green block):
+It works on the Sipeed Tang Console board (should also work on Tang Mega 60K or other boards with minor changes). When running the demo project looks like this (a moving green block):
 
 <img src="doc/ddr3_framebuffer.png" width=400>
