@@ -12,7 +12,7 @@ Some implementation details,
 * Streams data from DDR3 about 40 pixels ahead and fills a 16 pixel buffer, to hide DDR3 and controller latency.
 * DDR3 refresh is completely turned off for better timing consistency. It's fine as the buffer is written to at 60fps, much faster than the allows DRAM 64ms refresh intervals.
 
-Resource usage: ~3400 LUTs, ~4200 REGs, 16 BRAMs
+Resource usage: ~3400 LUTs, ~4200 REGs, 16 BRAMs (including the frame buffer, HDMI TX and DDR3 controller).
   
 It works on the Sipeed Tang Console board (should also work on Tang Mega 60K or other boards with minor changes). When running the demo project looks like this (a moving green block):
 
