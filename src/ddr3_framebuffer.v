@@ -31,6 +31,7 @@ module ddr3_framebuffer #(
                                      // height is fixed at 720
 )(
     input               clk_27,      // 27Mhz input clock
+    input               clk_g,       // 50Mhz crystal
     input               pll_lock_27,
     input               rst_n,
     output              clk_out,     // 74.25Mhz pixel clock. could be used by user logic
@@ -96,7 +97,7 @@ pll_ddr3 pll_ddr3_inst(
     .clkout2(memory_clk), 
     .clkin(clk_27), 
     .reset(~pll_lock_27),
-    .mdclk(clk_27), 
+    .mdclk(clk_g), 
     .mdopc(mdrp_op),        // 0: nop, 1: write, 2: read
     .mdainc(mdrp_inc),      // increment register address
     .mdwdi(mdrp_wdata),     // data to be written
@@ -113,7 +114,7 @@ pll_hdmi pll_hdmi_inst(
 reg mdrp_wr;
 reg [7:0] pll_stop_count;
 pll_mDRP_intf u_pll_mDRP_intf(
-    .clk(clk_27),
+    .clk(clk_g),
     .rst_n(1'b1),
     .pll_lock(pll_lock),
     .wr(mdrp_wr),
@@ -123,7 +124,7 @@ pll_mDRP_intf u_pll_mDRP_intf(
     .mdrp_rdata(mdrp_rdata)
 );    
 
-always@(posedge clk_27) begin
+always@(posedge clk_g) begin
     pll_stop_r <= pll_stop;
     mdrp_wr <= pll_stop ^ pll_stop_r;
     if (pll_stop_r && !pll_stop && pll_stop_count != 8'hff) begin
@@ -159,8 +160,8 @@ wire           app_ref_ack;
 DDR3_Memory_Interface_Top u_ddr3 (
     .memory_clk      (memory_clk),
     .pll_stop        (pll_stop),
-    .clk             (clk_27),
-    .rst_n           (rst_n),   //rst_n
+    .clk             (clk_g),
+    .rst_n           (1'b1),   
     //.app_burst_number(0),
     .cmd_ready       (app_rdy),
     .cmd             (app_cmd),
@@ -264,16 +265,16 @@ reg [7:0] cursor_delay;         // 32 cycles per write
 reg write_pixels_req;           // toggle to write 8 pixels
 reg write_pixels_ack;
 reg [9:0] wr_x, wr_y;           // write position
-reg [$clog2(FB_SIZE)-1:0] wr_addr;
+reg [$clog2(FB_SIZE*2)-1:0] wr_addr;
 
 reg read_pixels_req;            // toggle to read 8 pixels
 reg read_pixels_ack;
-reg [$clog2(FB_SIZE)-1:0] rd_addr;
+reg [$clog2(FB_SIZE*2)-1:0] rd_addr;
 reg prefetch;                   // will start prefetch next cycle
 reg [10:0] prefetch_x;
 reg [$clog2(DISP_WIDTH+WIDTH)-1:0] prefetch_x_cnt;
 reg [$clog2(720+HEIGHT)-1:0] prefetch_y_cnt;
-reg [$clog2(FB_SIZE-1)-1:0] prefetch_addr_line;   // current line to prefetch
+reg [$clog2(FB_SIZE*2)-1:0] prefetch_addr_line;   // current line to prefetch
 
 reg [COLOR_BITS-1:0] pixels [0:31];       // buffer to 32 pixels
 reg [$clog2(WIDTH)-1:0] ox;
@@ -300,8 +301,11 @@ always @(posedge clk) begin
         b_data[b_x[1:0]] <= fb_data;
         b_data_toggle <= ~b_data_toggle;
     end
-    if (fb_vsync)
+    if (fb_vsync) begin
         b_vsync_toggle <= ~b_vsync_toggle;
+        b_x <= 0;
+        b_y <= 0;
+    end
 end
 
 // cross to clk_x1 domain
@@ -327,7 +331,7 @@ always @(posedge clk_x1) begin
                 wr_y <= wr_y + 1;
             end
             if (wr_x[1:0] == 3) begin
-                wr_addr <= wr_y * WIDTH + {wr_x[9:2], 2'b0};
+                wr_addr <= {wr_y * WIDTH + {wr_x[9:2], 2'b0}, 1'b0};
                 app_wdf_data <= {(32-COLOR_BITS)'(1'b0), b_data[3], (32-COLOR_BITS)'(1'b0), b_data[2], 
                                  (32-COLOR_BITS)'(1'b0), b_data[1], (32-COLOR_BITS)'(1'b0), b_data[0]};
                 write_pixels_req <= ~write_pixels_req;      // execute write
@@ -362,7 +366,7 @@ always @(posedge clk_x1) begin
                 xcnt <= xcnt + fb_width - DISP_WIDTH;
                 ox <= ox + 1;
             end
-            rgb <= torgb(pixels[cx == 0 ? 0 : ox[4:0]]);
+            rgb <= torgb(pixels[cx == 0 ? 0 : ox[3:0]]);
         end else
             rgb <= 24'h202020;
 
@@ -372,7 +376,7 @@ always @(posedge clk_x1) begin
 end
 
 // prefetch timings
-localparam PREFETCH_DELAY = 32 * DISP_WIDTH / WIDTH;     // "upscaled" delay of 32 pixels, 48
+localparam PREFETCH_DELAY = 44;      // delay cycles: 26-37.  data is at most 39-26=13 cycles earlier. So a buffer of size 16 should be enough.
 // X_START is 160
 
 generate 
@@ -384,7 +388,6 @@ if (X_START >= PREFETCH_DELAY) begin
         end else begin
             prefetch <= 0;
             if (cx == X_START - PREFETCH_DELAY) begin
-                prefetch <= 1;
                 prefetch_x <= 0;
                 prefetch_x_cnt <= fb_width;
                 if (cy == 0) begin
@@ -394,7 +397,7 @@ if (X_START >= PREFETCH_DELAY) begin
                     prefetch_y_cnt <= prefetch_y_cnt + fb_height;
                     if (prefetch_y_cnt + fb_height >= 720) begin
                         prefetch_y_cnt <= prefetch_y_cnt + fb_height - 720;
-                        prefetch_addr_line <= prefetch_addr_line + fb_width;
+                        prefetch_addr_line <= prefetch_addr_line + {fb_width, 1'b0};
                     end
                 end
             end else if (prefetch_x < fb_width) begin
@@ -402,20 +405,21 @@ if (X_START >= PREFETCH_DELAY) begin
                 if (prefetch_x_cnt + fb_width >= DISP_WIDTH) begin
                     prefetch_x_cnt <= prefetch_x_cnt + fb_width - DISP_WIDTH;
                     prefetch_x <= prefetch_x + 1;
-                    if (prefetch_x[1:0] == 3)
+                    if (prefetch_x[1:0] == 0) begin
                         prefetch <= 1;
+                        read_pixels_req <= ~read_pixels_req;
+                        rd_addr <= {prefetch_x, 1'b0} + prefetch_addr_line;  // 0, 4, 8, 12, ...
+                    end
                 end
             end
         end
     end
 
     // prefetch pixels into pixels[]
-    always @(posedge clk_x1) begin
-        if (prefetch) begin
-            read_pixels_req <= ~read_pixels_req;
-            rd_addr <= prefetch_x + prefetch_addr_line;  // 0, 4, 8, 12, ...
-        end
-    end
+//    always @(posedge clk_x1) begin
+//        if (prefetch) begin
+//        end
+//    end
 end else begin
     $error("Line wrapping during prefetch is not implemented yet");
 end
@@ -449,29 +453,17 @@ always @(posedge clk_x1) begin
 end
 
 // receive pixels from DDR3 and write to pixels[] in 8 cycles
-reg [4:0] bram_addr;        // 32 pixels, receive 4 pixels per request
+reg [3:0] bram_addr;        // 32 pixels, receive 4 pixels per request
 always @(posedge clk_x1) begin
     if (cx == 0)                                    // reset addr before line start
         bram_addr <= 0;
 
-    // FIXME: this is using a lot of registers and LUTs. The
-    // data arrival can be as close as 4 cycles apart. So two shift registers
-    // should be enough.
     if (app_rd_data_valid) begin
         for (int i = 0; i < 4; i++) begin
             pixels[bram_addr+i] <= app_rd_data[32*i+:COLOR_BITS];
         end
         bram_addr <= bram_addr + 4;
     end
-    // if (app_rd_data_valid) begin
-    //     pixels[bram_addr] <= app_rd_data[15:0];     // write 1st pixel
-    //     bram_sr <= app_rd_data[127:16];             // save the rest 7 pixels
-    //     bram_addr <= bram_addr + 1;
-    // end else if (bram_addr[2:0] != 0) begin
-    //     pixels[bram_addr] <= bram_sr[15:0];         // shift and write remaining pixels
-    //     bram_sr <= {16'h0, bram_sr[111:16]};
-    //     bram_addr <= bram_addr + 1;
-    // end
 end
 
 

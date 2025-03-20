@@ -24,6 +24,6 @@
         <File path="src/pll_mDRP_intf.v" type="file.verilog" enable="1"/>
         <File path="src/console60k.cst" type="file.cst" enable="1"/>
         <File path="src/framebuffer2.sdc" type="file.sdc" enable="1"/>
-        <File path="src/framebuffer2.rao" type="file.gao" enable="1"/>
+        <File path="src/framebuffer2.rao" type="file.gao" enable="0"/>
     </FileList>
 </Project>

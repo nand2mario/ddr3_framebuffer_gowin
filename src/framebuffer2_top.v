@@ -63,6 +63,7 @@ ddr3_framebuffer #(
 ) fb (
     .clk_27(clk_27),
     .pll_lock_27(pll_lock_27),
+    .clk_g(clk_g),
     .clk_out(clk_x1),
     .rst_n(rst_n),
     .ddr_rst(ddr_rst),
@@ -106,15 +107,17 @@ ddr3_framebuffer #(
 reg [5:0] bg_r = 0, bg_g = 63, bg_b = 32;
 wire [17:0] bg_color = {bg_r, bg_g, bg_b};
 reg [7:0] delay;
-reg [9:0] block_x, block_y;
+reg [9:0] block_x = 0, block_y = 4;
 reg [9:0] wr_x, wr_y;
 reg [15:0] frame_cnt;
 
+//`define FIXED_BLOCK
+
 reg [2:0] pattern;
 
-localparam PATTERN_SOLID = 0;
-localparam PATTERN_GRID = 1;
-localparam PATTERN_GRADIENT = 2;
+localparam PATTERN_GRID = 0;
+localparam PATTERN_GRADIENT = 1;
+localparam PATTERN_SOLID = 2;
 
 // RGB5
 localparam GREY = 18'b100000_100000_100000;
@@ -149,20 +152,9 @@ always @(posedge clk_x1) begin
                     wr_y <= 0;
             end
             fb_we <= 1;
-            if (   wr_y[9:3] >= block_y && wr_y[9:3] < block_y+4 
-                && wr_x[9:3] >= block_x && wr_x[9:3] < block_x+4) begin
-                fb_data <= GREEN;
-            end else case (pattern)
-                PATTERN_SOLID: 
-                    fb_data <= bg_color;
-                PATTERN_GRID:
-                    fb_data <= (wr_x[3:0] == 0 || wr_y[3:0] == 0) ? {18{1'b1}} : 18'h0;
-                PATTERN_GRADIENT:
-                    fb_data <= {wr_x[8:3], wr_y[8:3], (wr_x[8:3] + wr_y[8:3])};
-
-            endcase
 
             // move block every frame
+`ifndef FIXED_BLOCK
             if (wr_x == 0 && wr_y == 0) begin 
                 block_x <= block_x + 1;
                 if (block_x == 640/8-1) begin
@@ -181,10 +173,26 @@ always @(posedge clk_x1) begin
                     bg_b <= bg_b + 3;
                 end
             end
-            
+`endif
             delay <= 3;
         end
     end
+end
+
+always @* begin
+    if (   wr_y[9:3] >= block_y && wr_y[9:3] < block_y+4 
+        && wr_x[9:3] >= block_x && wr_x[9:3] < block_x+4) begin
+        fb_data = GREEN;
+    end else case (pattern)
+        PATTERN_SOLID: 
+            fb_data = bg_color;
+        PATTERN_GRADIENT:
+            fb_data = {wr_x[8:3], wr_y[8:3], (wr_x[8:3] + wr_y[8:3])};
+        PATTERN_GRID:
+            fb_data = (wr_x[3:0] == 0 || wr_y[3:0] == 0) ? {18{1'b1}} : 18'h0;
+        default:
+            fb_data = (wr_x[3:0] == 0 || wr_y[3:0] == 0) ? {18{1'b1}} : 18'h0;
+    endcase    
 end
 
 assign leds = ~{6'b0, ~key, init_calib_complete};
