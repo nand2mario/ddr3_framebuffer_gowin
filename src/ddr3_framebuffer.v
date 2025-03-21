@@ -26,9 +26,7 @@
 module ddr3_framebuffer #(
     parameter WIDTH = 640,           // multiples of 4
     parameter HEIGHT = 480, 
-    parameter COLOR_BITS = 18,       // RGB666
-    parameter DISP_WIDTH = 960       // If < 1280, frame is centered with black bars on the sides.
-                                     // height is fixed at 720
+    parameter COLOR_BITS = 18        // RGB666
 )(
     input               clk_27,      // 27Mhz input clock
     input               clk_g,       // 50Mhz crystal
@@ -42,9 +40,13 @@ module ddr3_framebuffer #(
     input               clk,         // any clock <= 74.25Mhz (or `clk_out`)
     input [10:0]        fb_width,    // actual width of the framebuffer
     input [9:0]         fb_height,   // actual height of the framebuffer
+    input [10:0]        disp_width,  // display width to upscale to (e.g. 960 for 4:3 aspect ratio, 1080 for 3:2 aspect ratio)
     input               fb_vsync,    // vertical sync signal
     input               fb_we,       // update a pixel and move to next pixel
     input [COLOR_BITS-1:0] fb_data,  // pixel data
+
+    input [15:0]        sound_left,
+    input [15:0]        sound_right,
 
     // DDR3 interface
     output [14:0]       ddr_addr,   
@@ -206,6 +208,31 @@ DDR3_Memory_Interface_Top u_ddr3 (
     .IO_ddr_dqs_n    (ddr_dqs_n)
 );
 
+/////////////////////////////////////////////////////////////////////
+// Audio
+
+localparam AUDIO_RATE=48000;
+localparam AUDIO_CLK_DELAY = 74250 * 1000 / AUDIO_RATE / 2;
+logic [$clog2(AUDIO_CLK_DELAY)-1:0] audio_divider;
+logic clk_audio;
+
+always_ff@(posedge clk_x1) 
+begin
+    if (audio_divider != AUDIO_CLK_DELAY - 1) 
+        audio_divider++;
+    else begin 
+        clk_audio <= ~clk_audio; 
+        audio_divider <= 0; 
+    end
+end
+
+reg [15:0] audio_sample_word [1:0], audio_sample_word0 [1:0];
+always @(posedge clk_x1) begin       // crossing clock domain
+    audio_sample_word0[0] <= sound_left;
+    audio_sample_word[0] <= audio_sample_word0[0];
+    audio_sample_word0[1] <= sound_right;
+    audio_sample_word[1] <= audio_sample_word0[1];
+end
 
 /////////////////////////////////////////////////////////////////////
 // HDMI TX
@@ -232,10 +259,10 @@ hdmi #( .VIDEO_ID_CODE(VIDEOID),
 
 hdmi(   .clk_pixel_x5(hclk5), 
         .clk_pixel(clk_x1), 
-        .clk_audio(),           // TODO: add audio
+        .clk_audio(clk_audio),
         .rgb(rgb), 
         .reset( ddr_rst ),
-        .audio_sample_word(),
+        .audio_sample_word(audio_sample_word),
         .tmds(tmds), 
         .tmds_clock(), 
         .cx(cx), 
@@ -255,8 +282,8 @@ ELVDS_OBUF tmds_bufds [3:0] (
 // And a moving block as test pattern
 
 localparam FB_SIZE = WIDTH * HEIGHT;
-localparam X_START = (1280-DISP_WIDTH)/2;
-localparam X_END = (1280+DISP_WIDTH)/2;
+// localparam X_START = (1280-DISP_WIDTH)/2;
+// localparam X_END = (1280+DISP_WIDTH)/2;
 localparam RENDER_DELAY = 74_250_000 * 8 / WIDTH / HEIGHT / 60;   // 32
 
 reg [7:0] cursor_x, cursor_y;   // a green 8x8 block on grey background for demo
@@ -272,14 +299,14 @@ reg read_pixels_ack;
 reg [$clog2(FB_SIZE*2)-1:0] rd_addr;
 reg prefetch;                   // will start prefetch next cycle
 reg [10:0] prefetch_x;
-reg [$clog2(DISP_WIDTH+WIDTH)-1:0] prefetch_x_cnt;
+reg [$clog2(1280+WIDTH)-1:0] prefetch_x_cnt;
 reg [$clog2(720+HEIGHT)-1:0] prefetch_y_cnt;
 reg [$clog2(FB_SIZE*2)-1:0] prefetch_addr_line;   // current line to prefetch
 
 reg [COLOR_BITS-1:0] pixels [0:31];       // buffer to 32 pixels
 reg [$clog2(WIDTH)-1:0] ox;
 reg [$clog2(HEIGHT)-1:0] oy;
-reg [$clog2(DISP_WIDTH+WIDTH)-1:0] xcnt;
+reg [$clog2(1280+WIDTH)-1:0] xcnt;
 reg [$clog2(720+HEIGHT)-1:0] ycnt;
 
 // Framebuffer update - accumulate 4 pixels and then send to DDR3
@@ -342,28 +369,31 @@ end
 
 // upscaling and output RGB
 reg [$clog2(WIDTH)-1:0] ox_r;
+reg [10:0] x_start, x_end;      // determined by fb_width
+reg [10:0] diff_720_height, diff_disp_width_width;
+
 always @(posedge clk_x1) begin
     if (ddr_rst) begin
         ox <= 0; oy <= 0; xcnt <= 0; ycnt <= 0;
     end else begin
         // keep original pixel coordinates
-        if (cx == X_END) begin
+        if (cx == x_end) begin
             ox <= 0; xcnt <= 0;
             if (cy == 0) begin
                 oy <= 0;
                 ycnt <= fb_height;
             end else begin
                 ycnt <= ycnt + fb_height;
-                if (ycnt + fb_height > 720) begin
-                    ycnt <= ycnt + fb_height - 720;
+                if (ycnt >= diff_720_height) begin
+                    ycnt <= ycnt - diff_720_height;
                     oy <= oy + 1;
                 end
             end
         end 
-        if (cx >= X_START && cx < X_END) begin
+        if (cx >= x_start && cx < x_end) begin
             xcnt <= xcnt + fb_width;
-            if (xcnt + fb_width > DISP_WIDTH) begin
-                xcnt <= xcnt + fb_width - DISP_WIDTH;
+            if (xcnt >= diff_disp_width_width) begin
+                xcnt <= xcnt - diff_disp_width_width;
                 ox <= ox + 1;
             end
             rgb <= torgb(pixels[cx == 0 ? 0 : ox[3:0]]);
@@ -375,56 +405,52 @@ always @(posedge clk_x1) begin
     end
 end
 
+// some precalculation
+always @(posedge clk) begin
+    x_start <= (1280-disp_width)/2;
+    x_end <= (1280+disp_width)/2;
+    diff_720_height <= 720 - fb_height;
+    diff_disp_width_width <= disp_width - fb_width;
+end
+
 // prefetch timings
 localparam PREFETCH_DELAY = 44;      // delay cycles: 26-37.  data is at most 39-26=13 cycles earlier. So a buffer of size 16 should be enough.
 // X_START is 160
 
-generate 
-    
-if (X_START >= PREFETCH_DELAY) begin
-    always @(posedge clk_x1) begin
-        if (ddr_rst) begin
-            prefetch <= 0;
-        end else begin
-            prefetch <= 0;
-            if (cx == X_START - PREFETCH_DELAY) begin
-                prefetch_x <= 0;
-                prefetch_x_cnt <= fb_width;
-                if (cy == 0) begin
-                    prefetch_y_cnt <= 0;
-                    prefetch_addr_line <= 0;
-                end else begin
-                    prefetch_y_cnt <= prefetch_y_cnt + fb_height;
-                    if (prefetch_y_cnt + fb_height >= 720) begin
-                        prefetch_y_cnt <= prefetch_y_cnt + fb_height - 720;
-                        prefetch_addr_line <= prefetch_addr_line + {fb_width, 1'b0};
-                    end
+// TODO: wrapping while prefetching is not implemented yet
+always @(posedge clk_x1) begin
+    if (ddr_rst) begin
+        prefetch <= 0;
+    end else begin
+        prefetch <= 0;
+        if (cx == x_start - PREFETCH_DELAY) begin
+            prefetch_x <= 0;
+            prefetch_x_cnt <= fb_width;
+            if (cy == 0) begin
+                prefetch_y_cnt <= 0;
+                prefetch_addr_line <= 0;
+            end else begin
+                prefetch_y_cnt <= prefetch_y_cnt + fb_height;
+                if (prefetch_y_cnt >= diff_720_height) begin
+                    prefetch_y_cnt <= prefetch_y_cnt - diff_720_height;
+                    prefetch_addr_line <= prefetch_addr_line + {WIDTH, 1'b0};
                 end
-            end else if (prefetch_x < fb_width) begin
-                prefetch_x_cnt <= prefetch_x_cnt + fb_width;
-                if (prefetch_x_cnt + fb_width >= DISP_WIDTH) begin
-                    prefetch_x_cnt <= prefetch_x_cnt + fb_width - DISP_WIDTH;
-                    prefetch_x <= prefetch_x + 1;
-                    if (prefetch_x[1:0] == 0) begin
-                        prefetch <= 1;
-                        read_pixels_req <= ~read_pixels_req;
-                        rd_addr <= {prefetch_x, 1'b0} + prefetch_addr_line;  // 0, 4, 8, 12, ...
-                    end
+            end
+        end else if (prefetch_x < fb_width) begin
+            prefetch_x_cnt <= prefetch_x_cnt + fb_width;
+            if (prefetch_x_cnt >= diff_disp_width_width) begin
+                prefetch_x_cnt <= prefetch_x_cnt - diff_disp_width_width;
+                prefetch_x <= prefetch_x + 1;
+                if (prefetch_x[1:0] == 0) begin
+                    prefetch <= 1;
+                    read_pixels_req <= ~read_pixels_req;
+                    rd_addr <= {prefetch_x, 1'b0} + prefetch_addr_line;  // 0, 4, 8, 12, ...
                 end
             end
         end
     end
-
-    // prefetch pixels into pixels[]
-//    always @(posedge clk_x1) begin
-//        if (prefetch) begin
-//        end
-//    end
-end else begin
-    $error("Line wrapping during prefetch is not implemented yet");
 end
 
-endgenerate
 
 
 // actual framebuffer DDR3 read/write

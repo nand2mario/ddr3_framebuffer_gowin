@@ -49,6 +49,16 @@ reg [18:0] fb_addr;     // 640*480
 reg [17:0] fb_data;     // RGB666
 reg fb_we;
 
+wire overlay = ~key;
+reg frame_end, frame_end_r;
+reg overlay_r;
+reg overlay_we;
+reg [7:0] overlay_x, overlay_y;
+reg [14:0] overlay_color;
+reg [17:0] overlay_data;
+reg [2:0] overlay_cnt;
+reg vsync;
+
 pll_27 pll_27_inst(
     .clkout0(clk_27),
     .clkin(clk_g),
@@ -58,8 +68,7 @@ pll_27 pll_27_inst(
 ddr3_framebuffer #(
     .WIDTH(640),
     .HEIGHT(480),
-    .COLOR_BITS(18),
-    .DISP_WIDTH(960)
+    .COLOR_BITS(18)
 ) fb (
     .clk_27(clk_27),
     .pll_lock_27(pll_lock_27),
@@ -71,11 +80,12 @@ ddr3_framebuffer #(
     
     // Framebuffer interface
     .clk(clk_x1),
-    .fb_width(640),
-    .fb_height(480),
+    .fb_width(overlay ? 256 : 640),
+    .fb_height(overlay ? 224 : 480),
+    .disp_width(overlay ? 1080 : 960),
     .fb_vsync(vsync),
-    .fb_we(fb_we),
-    .fb_data(fb_data),
+    .fb_we(overlay ? overlay_we : fb_we),
+    .fb_data(overlay ? overlay_data : fb_data),
     
     // DDR3 interface
     .ddr_addr(ddr_addr),
@@ -130,7 +140,7 @@ always @(posedge clk_x1) begin
         delay <= 3;
         wr_x <= 0; wr_y <= 0;
         fb_we <= 0;
-    end else begin
+    end else if (!overlay) begin
         vsync <= 0;
         fb_we <= 0;
         delay <= delay - 1;
@@ -176,6 +186,30 @@ always @(posedge clk_x1) begin
 `endif
             delay <= 3;
         end
+    end else begin
+        overlay_r <= overlay;
+        vsync <= 0;
+        overlay_we <= 0;
+        
+        // send overlay data to framebuffer
+        // 50Mhz, 8 cycles per pixel -> 109fps
+        overlay_cnt <= overlay_cnt + 1;
+        case (overlay_cnt)
+        0: if (overlay_x == 0 && overlay_y == 0)
+            vsync <= 1;
+        4: begin
+            overlay_we <= 1;
+            // BGR5 to RGB6
+            overlay_data <= {overlay_color[4:0], 1'b0, overlay_color[14:10], 1'b0, overlay_color[9:5], 1'b0};
+            overlay_x <= overlay_x + 1;
+            if (overlay_x == 255) begin
+                overlay_y <= overlay_y + 1;
+                if (overlay_y == 223) 
+                    overlay_y <= 0;
+            end
+        end
+        default: ;
+        endcase
     end
 end
 
@@ -193,6 +227,13 @@ always @* begin
         default:
             fb_data = (wr_x[3:0] == 0 || wr_y[3:0] == 0) ? {18{1'b1}} : 18'h0;
     endcase    
+end
+
+always @* begin
+    if (overlay_x == 0 || overlay_x == 255 || overlay_y == 0 || overlay_y == 223)
+        overlay_color = 15'b11111_11111_11111;
+    else
+        overlay_color = 15'b0;
 end
 
 assign leds = ~{6'b0, ~key, init_calib_complete};
