@@ -1,13 +1,13 @@
 # DDR3 frame buffer for Sipeed Tang Console
 
-This is an example of using DDR3 memory as a frame buffer that also does upscaling. The project,
+This is an example of using DDR3 memory as a frame buffer that also does upscaling. The module,
 
 * Outputs 720p HDMI
 * Maintains a frame buffer of user specified dimensions (640x480 in this demo) in DDR3.
 * Color depth supported: 24, 18, 15 and 12 bits.
 * Upscales the frame buffer to 720p while maintaining aspect ratio.
 * Supports dynamic change of the frame buffer dimensions and the display dimensions.
-* Allows updates to be frame buffer from any clock domain.
+* Allows updates to the frame buffer from any clock domain.
 
 Some implementation details,
 * Uses Gowin IP for DDR3 memory controller. DDR3 is running at 297Mhz, 4x 720 pixel clock of 74.25Mhz (i.e. DDR3-594). Per [Micron datasheet](https://forum.digilent.com/topic/25816-should-max-clock-period-be-min-clock-period/), DDR3 lowest frequency is 300Mhz. However this is working fine for me...
