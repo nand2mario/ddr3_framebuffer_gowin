@@ -4,7 +4,7 @@ This is an example of using DDR3 memory as a frame buffer that also does upscali
 
 * Outputs 720p HDMI
 * Maintains a frame buffer of user specified dimensions (640x480 in this demo) in DDR3.
-* Color depth supported: 24, 18, 15 and 12 bits.
+* Supports various color depths: 24, 18, 15 and 12 bits.
 * Upscales the frame buffer to 720p while maintaining aspect ratio.
 * Supports dynamic change of the frame buffer dimensions and the display dimensions.
 * Allows updates to the frame buffer from any clock domain.
