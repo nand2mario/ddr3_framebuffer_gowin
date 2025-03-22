@@ -68,7 +68,8 @@ pll_27 pll_27_inst(
 ddr3_framebuffer #(
     .WIDTH(640),
     .HEIGHT(480),
-    .COLOR_BITS(18)
+    .COLOR_BITS(18),
+    .PREFETCH_DELAY(44)             // larger than default 40 to avoid flickering at VGA resolution
 ) fb (
     .clk_27(clk_27),
     .pll_lock_27(pll_lock_27),
@@ -79,7 +80,7 @@ ddr3_framebuffer #(
     .init_calib_complete(init_calib_complete),
     
     // Framebuffer interface
-    .clk(clk_x1),
+    .clk(clk_g),
     .fb_width(overlay ? 256 : 640),
     .fb_height(overlay ? 224 : 480),
     .disp_width(overlay ? 1080 : 960),
@@ -135,7 +136,7 @@ localparam RED = 18'b111111_000000_000000;
 localparam GREEN = 18'b000000_111111_000000;
 localparam BLUE = 18'b000000_000000_111111;
 
-always @(posedge clk_x1) begin
+always @(posedge clk_g) begin           // test use 50Mhz to drive updates
     if (ddr_rst) begin
         delay <= 3;
         wr_x <= 0; wr_y <= 0;

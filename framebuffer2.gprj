@@ -25,5 +25,6 @@
         <File path="src/console60k.cst" type="file.cst" enable="1"/>
         <File path="src/framebuffer2.sdc" type="file.sdc" enable="1"/>
         <File path="src/framebuffer2.rao" type="file.gao" enable="0"/>
+        <File path="src/write.rao" type="file.gao" enable="1"/>
     </FileList>
 </Project>
