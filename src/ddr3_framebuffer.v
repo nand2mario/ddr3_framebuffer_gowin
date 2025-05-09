@@ -26,7 +26,7 @@
 module ddr3_framebuffer #(
     parameter WIDTH = 640,           // multiples of 4
     parameter HEIGHT = 480, 
-    parameter COLOR_BITS = 18,       // RGB666
+    parameter COLOR_BITS = 24,       // RGB666
     parameter PREFETCH_DELAY = 40    // buffer is 16 pixels, so 40 accommodates any delay between 24-40 cycles
 )(
     input               clk_27,      // 27Mhz input clock
@@ -42,6 +42,7 @@ module ddr3_framebuffer #(
     input [10:0]        fb_width,    // actual width of the framebuffer
     input [9:0]         fb_height,   // actual height of the framebuffer
     input [10:0]        disp_width,  // display width to upscale to (e.g. 960 for 4:3 aspect ratio, 1080 for 3:2 aspect ratio)
+    input  [9:0]  disp_height,
     input               fb_vsync,    // vertical sync signal
     input               fb_we,       // update a pixel and move to next pixel
     input [COLOR_BITS-1:0] fb_data,  // pixel data
@@ -78,7 +79,7 @@ module ddr3_framebuffer #(
 // Clocks
 wire hclk, hclk5;
 wire memory_clk;
-wire clk_x1;
+wire clk_x1 /* synthesis syn_keep=1 */;
 assign clk_out = clk_x1;
 wire pll_lock;
 
@@ -100,12 +101,7 @@ pll_ddr3 pll_ddr3_inst(
 //    .clkout1(), 
     .clkout2(memory_clk), 
     .clkin(clk_27), 
-    .reset(~pll_lock_27),
-    .mdclk(clk_g), 
-    .mdopc(mdrp_op),        // 0: nop, 1: write, 2: read
-    .mdainc(mdrp_inc),      // increment register address
-    .mdwdi(mdrp_wdata),     // data to be written
-    .mdrdo(mdrp_rdata)      // data read from register
+    .reset(~pll_lock_27)
 );
 
 // 74.25 -> 371.25 TMDS clock
@@ -115,26 +111,6 @@ pll_hdmi pll_hdmi_inst(
     .clkin(clk_x1)
 );
 
-reg mdrp_wr;
-reg [7:0] pll_stop_count;
-pll_mDRP_intf u_pll_mDRP_intf(
-    .clk(clk_g),
-    .rst_n(1'b1),
-    .pll_lock(pll_lock),
-    .wr(mdrp_wr),
-    .mdrp_inc(mdrp_inc),
-    .mdrp_op(mdrp_op),
-    .mdrp_wdata(mdrp_wdata),
-    .mdrp_rdata(mdrp_rdata)
-);    
-
-always@(posedge clk_g) begin
-    pll_stop_r <= pll_stop;
-    mdrp_wr <= pll_stop ^ pll_stop_r;
-    if (pll_stop_r && !pll_stop && pll_stop_count != 8'hff) begin
-        pll_stop_count <= pll_stop_count + 1;
-    end
-end
 
 /////////////////////////////////////////////////////////////////////
 // DDR3 controller
@@ -367,88 +343,134 @@ end
 // upscaling and output RGB
 reg [$clog2(WIDTH)-1:0] ox_r;
 reg [10:0] x_start, x_end;      // determined by fb_width
-reg [10:0] diff_720_height, diff_disp_width_width;
-reg [10:0] x_prefetch_start;
 
+
+ reg [10:0] diff_disp_width_width;
+ reg [10:0] diff_disp_height_height;    // NEW
+
+// reg [10:0] diff_720_height;
+
+
+reg [10:0] x_prefetch_start;
+reg [9:0] y_start, y_end;
+// ──────────────────────────────────────────────
+// Nearest‑neighbour scaler and HDMI pixel drive
+// ──────────────────────────────────────────────
 always @(posedge clk_x1) begin
     if (ddr_rst) begin
-        ox <= 0; oy <= 0; xcnt <= 0; ycnt <= 0;
+        ox   <= 0;
+        oy   <= 0;
+        xcnt <= 0;
+        ycnt <= 0;  
     end else begin
-        // keep original pixel coordinates
+
+
+        // ----- end‑of‑active‑line bookkeeping -----
         if (cx == x_end) begin
-            ox <= 0; xcnt <= 0;
+            ox   <= 0;
+            xcnt <= 0;
+
             if (cy == 0) begin
-                oy <= 0;
+                // start of a new frame
+                oy   <= 0;
                 ycnt <= fb_height;
             end else begin
+                // Bresenham‑style vertical accumulator
                 ycnt <= ycnt + fb_height;
-                if (ycnt >= diff_720_height) begin
-                    ycnt <= ycnt - diff_720_height;
-                    oy <= oy + 1;
+                if (ycnt >= diff_disp_height_height) begin   // NEW
+                    ycnt <= ycnt - diff_disp_height_height;  // NEW
+                    oy   <= oy + 1;
                 end
             end
-        end 
-        if (cx >= x_start && cx < x_end) begin
+        end
+
+        // ----- active‑pixel region -----
+    if ( cx >= x_start && cx <  x_end &&
+        cy >= y_start && cy <  y_end ) begin
+            // horizontal Bresenham
             xcnt <= xcnt + fb_width;
             if (xcnt >= diff_disp_width_width) begin
                 xcnt <= xcnt - diff_disp_width_width;
-                ox <= ox + 1;
+                ox   <= ox + 1;
             end
+            // fetch pixel from 32‑pixel cache
             rgb <= torgb(pixels[cx == 0 ? 0 : ox[3:0]]);
-        end else
+        end else begin
+            // letter / pillar box colour
             rgb <= 24'h202020;
-
-        // if (cy >= 300 && cy < 330)    // a blue bar in the middle for debug
-        //     rgb <= 24'h4040ff;
+        end
     end
 end
+
 
 // some precalculation
 always @(posedge clk) begin
-    x_start <= (1280-disp_width)/2;
-    x_end <= (1280+disp_width)/2;
-    if (ddr_prefetch_delay != 0) begin
+    x_start <= (1280 - disp_width ) / 2;
+    x_end   <= (1280 + disp_width ) / 2;
+
+    if (ddr_prefetch_delay != 0)
         x_prefetch_start <= x_start - ddr_prefetch_delay;
-    end else begin
-        x_prefetch_start <= x_start - PREFETCH_DELAY;       // default delay
-    end
-    diff_720_height <= 720 - fb_height;
-    diff_disp_width_width <= disp_width - fb_width;
+    else
+        x_prefetch_start <= x_start - PREFETCH_DELAY;
+
+    // vertical centring
+    y_start <= (720 - disp_height) / 2;
+    y_end   <= (720 + disp_height) / 2;
+
+    // Bresenham thresholds
+    diff_disp_width_width   <= disp_width;  
+    diff_disp_height_height <= disp_height;  
 end
 
 // TODO: wrapping while prefetching is not implemented yet
+// ──────────────────────────────────────────────
+// DDR3 read‑side prefetch (32‑pixel look‑ahead)
+// ──────────────────────────────────────────────
 always @(posedge clk_x1) begin
     if (ddr_rst) begin
-        prefetch <= 0;
+        prefetch           <= 1'b0;
+        prefetch_x         <= 11'd0;
+        prefetch_x_cnt     <= 0;
+        prefetch_y_cnt     <= 0;
+        prefetch_addr_line <= 0;
     end else begin
-        prefetch <= 0;
-        if (cx == x_prefetch_start) begin
-            prefetch_x <= 0;
-            prefetch_x_cnt <= fb_width;
+        prefetch <= 1'b0;   // default, asserted only on the 4‑pixel boundaries
+
+        // ----- first fetch of a scanline -----
+      if ( cx == x_prefetch_start && cy >= y_start && cy < y_end ) begin
+            prefetch_x      <= 0;
+            prefetch_x_cnt  <= fb_width;
+
+            // update vertical accumulator
             if (cy == 0) begin
-                prefetch_y_cnt <= 0;
+                prefetch_y_cnt     <= 0;
                 prefetch_addr_line <= 0;
             end else begin
                 prefetch_y_cnt <= prefetch_y_cnt + fb_height;
-                if (prefetch_y_cnt >= diff_720_height) begin
-                    prefetch_y_cnt <= prefetch_y_cnt - diff_720_height;
-                    prefetch_addr_line <= prefetch_addr_line + {WIDTH, 1'b0};
+                if (prefetch_y_cnt >= diff_disp_height_height) begin // NEW
+                    prefetch_y_cnt     <= prefetch_y_cnt - diff_disp_height_height; // NEW
+                    prefetch_addr_line <= prefetch_addr_line + {WIDTH,1'b0};
                 end
             end
+
+        // ----- continue horizontally across the line -----
         end else if (prefetch_x < fb_width) begin
             prefetch_x_cnt <= prefetch_x_cnt + fb_width;
             if (prefetch_x_cnt >= diff_disp_width_width) begin
                 prefetch_x_cnt <= prefetch_x_cnt - diff_disp_width_width;
-                prefetch_x <= prefetch_x + 1;
-                if (prefetch_x[1:0] == 0) begin
-                    prefetch <= 1;
+                prefetch_x     <= prefetch_x + 1;
+
+                // issue DDR3 READ every four source pixels
+                if (prefetch_x[1:0] == 2'b00) begin
+                    prefetch        <= 1'b1;
                     read_pixels_req <= ~read_pixels_req;
-                    rd_addr <= {prefetch_x, 1'b0} + prefetch_addr_line;  // 0, 4, 8, 12, ...
+                    rd_addr         <= {prefetch_x,1'b0} + prefetch_addr_line; // word addr
                 end
             end
         end
     end
 end
+
 
 // actual framebuffer DDR3 read/write
 always @(posedge clk_x1) begin
@@ -674,4 +696,3 @@ module crossdomain #(parameter SIZE = 1) (
     end
 
 endmodule
-
