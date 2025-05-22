@@ -6,8 +6,8 @@
 // - Color depth supported: 12, 15, 18, and 24 bits.
 // - Dynamic change of framebuffer size is supported. After change the upscaling
 //   logic will adapt to the new size.
-// - Image is updated by vsync (`fb_vsync`) and then streaming every pixel (`fb_data` 
-//   and `fb_we`).
+// - Image is updated by vsync (fb_vsync) and then streaming every pixel (fb_data 
+//   and fb_we).
 // - Resource usage: 16 BRAMs, ~3000 LUTs, ~3000 REGs, including DDR3 and HDMI IPs.
 //
 // Internals,
@@ -26,8 +26,7 @@
 module ddr3_framebuffer #(
     parameter WIDTH = 640,           // multiples of 4
     parameter HEIGHT = 480, 
-    parameter COLOR_BITS = 24,       // RGB666
-    parameter PREFETCH_DELAY = 40    // buffer is 16 pixels, so 40 accommodates any delay between 24-40 cycles
+    parameter COLOR_BITS = 24       // RGB666
 )(
     input               clk_27,      // 27Mhz input clock
     input               clk_g,       // 50Mhz crystal
@@ -38,7 +37,7 @@ module ddr3_framebuffer #(
     output              init_calib_complete,
 
     // Framebuffer interface
-    input               clk,         // any clock <= 74.25Mhz (or `clk_out`)
+    input               clk,         // any clock <= 74.25Mhz (or clk_out)
     input [10:0]        fb_width,    // actual width of the framebuffer
     input [9:0]         fb_height,   // actual height of the framebuffer
     input [10:0]        disp_width,  // display width to upscale to (e.g. 960 for 4:3 aspect ratio, 1080 for 3:2 aspect ratio)
@@ -84,13 +83,7 @@ assign clk_out = clk_x1;
 wire pll_lock;
 
 // dynamic reconfiguration port from DDR controller to framebuffer PLL
-reg wr;     // for mDRP
-wire mdrp_inc;
-wire [1:0] mdrp_op;
-wire [7:0] mdrp_wdata;
-wire [7:0] mdrp_rdata;
 wire pll_stop;
-reg pll_stop_r;
 
 // 74.25   pixel clock
 // 371.25  5x pixel clock
@@ -163,9 +156,9 @@ DDR3_Memory_Interface_Top u_ddr3 (
     .clk_out         (clk_x1),
     .pll_lock        (pll_lock), 
     //.pll_lock        (1'b1), 
-    //`ifdef ECC
+    //ifdef ECC
     //.ecc_err         (ecc_err),
-    //`endif
+    //endif
     .burst           (app_burst),
     // mem interface
     .ddr_rst         (ddr_rst),
@@ -257,24 +250,23 @@ ELVDS_OBUF tmds_bufds [3:0] (
 
 /////////////////////////////////////////////////////////////////////
 // 720p Framebuffer
-// And a moving block as test pattern
+// 
 
 localparam FB_SIZE = WIDTH * HEIGHT;
 // localparam X_START = (1280-DISP_WIDTH)/2;
 // localparam X_END = (1280+DISP_WIDTH)/2;
-localparam RENDER_DELAY = 74_250_000 * 8 / WIDTH / HEIGHT / 60;   // 32
 
-reg [7:0] cursor_x, cursor_y;   // a green 8x8 block on grey background for demo
-reg [7:0] cursor_delay;         // 32 cycles per write
+
 
 reg write_pixels_req;           // toggle to write 8 pixels
 reg write_pixels_ack;
 reg [9:0] wr_x, wr_y;           // write position
-reg [$clog2(FB_SIZE*2)-1:0] wr_addr;
+reg [27:0] wr_addr;
+reg [27:0] rd_addr;
 
 reg read_pixels_req;            // toggle to read 8 pixels
 reg read_pixels_ack;
-reg [$clog2(FB_SIZE*2)-1:0] rd_addr;
+
 reg prefetch;                   // will start prefetch next cycle
 reg [10:0] prefetch_x;
 reg [$clog2(1280+WIDTH)-1:0] prefetch_x_cnt;
@@ -300,11 +292,145 @@ asyncfifo #(.BUFFER_ADDR_WIDTH(3), .DATA_WIDTH(COLOR_BITS)) u_asyncfifo (
   .read_clk(clk_x1), .read(fifo_ready), .read_data(fifo_data),  .can_read(fifo_ready)
 );
 
-always @(posedge clk) begin
-    if (fb_vsync) begin
-        b_vsync_toggle <= ~b_vsync_toggle;
+
+//////////////////////////////
+// VSYNC POLARITY, REFRESH RATE DETECTION + TRIPLE BUFFER LOGIC
+//////////////////////////////
+
+reg fb_vsync_r;
+always @(posedge clk_x1)
+    fb_vsync_r <= fb_vsync;
+
+//Vsync polarity detection (one-shot after 1024 samples)
+reg [15:0] vsync_high_cnt = 0;
+reg [15:0] vsync_low_cnt = 0;
+reg [9:0]  vsync_sample_counter = 0;
+reg        vsync_polarity;    // 0 = active high, 1 = active low
+reg        polarity_valid = 0;
+
+always @(posedge clk_x1) begin
+    if (ddr_rst) begin
+        vsync_high_cnt       <= 0;
+        vsync_low_cnt        <= 0;
+        vsync_sample_counter <= 0;
+        polarity_valid       <= 0;
+    end else if (!polarity_valid) begin
+        if (fb_vsync)
+            vsync_high_cnt <= vsync_high_cnt + 1;
+        else
+            vsync_low_cnt  <= vsync_low_cnt + 1;
+
+        vsync_sample_counter <= vsync_sample_counter + 1;
+
+        if (vsync_sample_counter == 10'd1023) begin
+            polarity_valid   <= 1;
+            vsync_polarity   <= (vsync_high_cnt > vsync_low_cnt);  // 1 = active low 
+        end
     end
 end
+
+//Generate frame_start_edge based on detected polarity
+wire frame_start_edge = polarity_valid && (
+    vsync_polarity ? (fb_vsync_r && !fb_vsync) : (!fb_vsync_r && fb_vsync)
+);
+
+//Toggle frame write trigger when new frame starts
+reg b_vsync_toggle;
+always @(posedge clk_x1) begin
+    if (ddr_rst)
+        b_vsync_toggle <= 0;
+    else if (frame_start_edge)
+        b_vsync_toggle <= ~b_vsync_toggle;
+end
+
+/////////////// DETECT REFRESH RATE
+localparam FRAME_60HZ_CYCLES = 1_237_500;
+
+reg [23:0] frame_timer = 0;
+reg [23:0] last_frame_period = 0;
+
+always @(posedge clk_x1) begin
+    frame_timer <= frame_timer + 1;
+
+    if (frame_start_edge) begin
+        last_frame_period <= frame_timer;
+        frame_timer <= 0;
+    end
+end
+
+reg frame_greater_than_60hz;                 // 1 if the source is above 60hz.  0 if the source is greater than 60hz
+
+always @(posedge clk_x1) begin
+    // Debounced check only after each new frame
+    if (frame_start_edge) begin
+        frame_greater_than_60hz <= (last_frame_period < FRAME_60HZ_CYCLES);
+    end
+end
+
+///////////////// triple frame arbiter//////////////////////////////
+
+parameter BASE_OFFSET = 28'h0100_000; // 16MB offset.   So around the lowest ~64MB are framebuffer logic.
+
+// Next-frame wraparound function (1 → 2 → 3 → 1)
+function [1:0] next_frame(input [1:0] f);
+    begin
+        if (f == 3)
+            next_frame = 1;
+        else
+            next_frame = f + 1;
+    end
+endfunction
+
+// Detect output frame edge
+wire output_frame_done = (cx == 0 && cy == 0);
+
+reg [1:0] current_write_frame = 2'd1;
+reg [1:0] current_read_frame  = 2'd2;
+
+wire [1:0] next_write_frame = next_frame(current_write_frame);
+wire [1:0] next_read_frame  = next_frame(current_read_frame);
+
+reg dropped_frame;
+reg repeated_frame;
+
+always @(posedge clk_x1) begin
+    if (ddr_rst) begin
+        current_write_frame <= 2'd1;
+        current_read_frame  <= 2'd2;
+        dropped_frame       <= 0;
+        repeated_frame      <= 0;
+    end else begin
+        dropped_frame  <= 0;
+        repeated_frame <= 0;
+
+        // === WRITE SIDE LOGIC ===
+        if (frame_start_edge) begin
+            if (next_write_frame != current_read_frame) begin
+                current_write_frame <= next_write_frame;
+            end else begin
+                dropped_frame <= 1;  // write too fast
+            end
+        end
+
+        // === READ SIDE LOGIC ===
+        if (output_frame_done) begin
+            if (current_read_frame != current_write_frame &&
+                next_read_frame != current_write_frame) begin
+                current_read_frame <= next_read_frame;
+            end else begin
+                repeated_frame <= 1; // write too slow
+            end
+        end
+    end
+end
+
+                                           // current read/write frame indexs at 1, and ends at 3. triple frame.
+wire [27:0] frame_base_write_addr =  BASE_OFFSET + (current_write_frame * fb_width * fb_height);  //current_write_frame
+wire [27:0] frame_base_read_addr  =  BASE_OFFSET + (current_read_frame * fb_width * fb_height); //current_read_frame
+
+
+////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////
 
 // cross to clk_x1 domain
 always @(posedge clk_x1) begin
@@ -323,7 +449,7 @@ always @(posedge clk_x1) begin
         if (fifo_ready) begin
             // accumulate 4 pixels and send to ddr
             if (wr_x[1:0] == 3) begin
-                wr_addr <= {wr_y * WIDTH + {wr_x[9:2], 2'b0}, 1'b0};
+                wr_addr <= frame_base_write_addr + {wr_y * fb_width + {wr_x[9:2], 2'b0}, 1'b0};
                 app_wdf_data <= {(32-COLOR_BITS)'(1'b0), fifo_data, (32-COLOR_BITS)'(1'b0), b_data[2], 
                                  (32-COLOR_BITS)'(1'b0), b_data[1], (32-COLOR_BITS)'(1'b0), b_data[0]};
                 write_pixels_req <= ~write_pixels_req;      // execute write
@@ -334,7 +460,9 @@ always @(posedge clk_x1) begin
             wr_x <= wr_x + 1;
             if (wr_x + 1 >= fb_width) begin
                 wr_x <= 0;
-                wr_y <= wr_y + 1;
+                if (wr_y +1 < fb_height) begin
+                    wr_y <= wr_y + 1;
+                end
             end
         end
     end
@@ -343,14 +471,6 @@ end
 // upscaling and output RGB
 reg [$clog2(WIDTH)-1:0] ox_r;
 reg [10:0] x_start, x_end;      // determined by fb_width
-
-
- reg [10:0] diff_disp_width_width;
- reg [10:0] diff_disp_height_height;    // NEW
-
-// reg [10:0] diff_720_height;
-
-
 reg [10:0] x_prefetch_start;
 reg [9:0] y_start, y_end;
 // ──────────────────────────────────────────────
@@ -375,10 +495,9 @@ always @(posedge clk_x1) begin
                 oy   <= 0;
                 ycnt <= fb_height;
             end else begin
-                // Bresenham‑style vertical accumulator
                 ycnt <= ycnt + fb_height;
-                if (ycnt >= diff_disp_height_height) begin   // NEW
-                    ycnt <= ycnt - diff_disp_height_height;  // NEW
+                if (ycnt >= disp_height) begin
+                    ycnt <= ycnt - disp_height;
                     oy   <= oy + 1;
                 end
             end
@@ -387,10 +506,9 @@ always @(posedge clk_x1) begin
         // ----- active‑pixel region -----
     if ( cx >= x_start && cx <  x_end &&
         cy >= y_start && cy <  y_end ) begin
-            // horizontal Bresenham
             xcnt <= xcnt + fb_width;
-            if (xcnt >= diff_disp_width_width) begin
-                xcnt <= xcnt - diff_disp_width_width;
+            if (xcnt >= disp_width) begin
+                xcnt <= xcnt - disp_width;
                 ox   <= ox + 1;
             end
             // fetch pixel from 32‑pixel cache
@@ -404,22 +522,16 @@ end
 
 
 // some precalculation
-always @(posedge clk) begin
+always @(posedge clk_x1) begin
     x_start <= (1280 - disp_width ) / 2;
     x_end   <= (1280 + disp_width ) / 2;
 
-    if (ddr_prefetch_delay != 0)
-        x_prefetch_start <= x_start - ddr_prefetch_delay;
-    else
-        x_prefetch_start <= x_start - PREFETCH_DELAY;
+    x_prefetch_start <= x_start - ddr_prefetch_delay;
 
     // vertical centring
     y_start <= (720 - disp_height) / 2;
     y_end   <= (720 + disp_height) / 2;
 
-    // Bresenham thresholds
-    diff_disp_width_width   <= disp_width;  
-    diff_disp_height_height <= disp_height;  
 end
 
 // TODO: wrapping while prefetching is not implemented yet
@@ -447,17 +559,17 @@ always @(posedge clk_x1) begin
                 prefetch_addr_line <= 0;
             end else begin
                 prefetch_y_cnt <= prefetch_y_cnt + fb_height;
-                if (prefetch_y_cnt >= diff_disp_height_height) begin // NEW
-                    prefetch_y_cnt     <= prefetch_y_cnt - diff_disp_height_height; // NEW
-                    prefetch_addr_line <= prefetch_addr_line + {WIDTH,1'b0};
+                if (prefetch_y_cnt >= disp_height) begin 
+                    prefetch_y_cnt     <= prefetch_y_cnt - disp_height; 
+                    prefetch_addr_line <= frame_base_read_addr + prefetch_addr_line + {fb_width,1'b0};
                 end
             end
 
         // ----- continue horizontally across the line -----
         end else if (prefetch_x < fb_width) begin
             prefetch_x_cnt <= prefetch_x_cnt + fb_width;
-            if (prefetch_x_cnt >= diff_disp_width_width) begin
-                prefetch_x_cnt <= prefetch_x_cnt - diff_disp_width_width;
+            if (prefetch_x_cnt >= disp_width) begin
+                prefetch_x_cnt <= prefetch_x_cnt - disp_width;
                 prefetch_x     <= prefetch_x + 1;
 
                 // issue DDR3 READ every four source pixels
@@ -470,6 +582,8 @@ always @(posedge clk_x1) begin
         end
     end
 end
+
+
 
 
 // actual framebuffer DDR3 read/write
@@ -493,14 +607,19 @@ always @(posedge clk_x1) begin
             app_addr <= wr_addr;
             app_wdf_wren <= 1;
             write_pixels_ack <= write_pixels_req;
+        end else begin
+            // Default/idle case.   If you notice on logic analyzer, there is a lot of IDLE time and module defaults to 111 when idle.
+            app_cmd <= 3'b111;
+            app_en <= 0;
         end
     end
 end
 
+
 // receive pixels from DDR3 and write to pixels[] in 8 cycles
 reg [3:0] bram_addr;        // 32 pixels, receive 4 pixels per request
 always @(posedge clk_x1) begin
-    if (cx == 0)                                    // reset addr before line start
+    if (cx == x_start && cy >= y_start && cy < y_end)                                    // reset addr before line start
         bram_addr <= 0;
 
     if (app_rd_data_valid) begin
