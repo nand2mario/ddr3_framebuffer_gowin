@@ -30,6 +30,9 @@ module top(
 	output [2:0]        tmds_d_p
 );
 
+// this defines CONSOLE_60K or CONSOLE_138K depending on include dir defined in project file
+`include "config.vh"
+
 reg rst_n = 0;
 reg [15:0] rst_cnt = 16'hffff;
 
@@ -59,11 +62,20 @@ reg [17:0] overlay_data;
 reg [2:0] overlay_cnt;
 reg vsync;
 
+`ifdef CONSOLE_138K
+pll_27 pll_27_inst(
+    .clkout0(clk_27),
+    .init_clk(clk_g),
+    .clkin(clk_g),
+    .lock(pll_lock_27)
+);
+`else
 pll_27 pll_27_inst(
     .clkout0(clk_27),
     .clkin(clk_g),
     .lock(pll_lock_27)
 );
+`endif
 
 ddr3_framebuffer #(
     .WIDTH(640),

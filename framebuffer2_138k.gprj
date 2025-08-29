@@ -3,11 +3,14 @@
 <Project>
     <Template>FPGA</Template>
     <Version>5</Version>
-    <Device name="GW5AT-60B" pn="GW5AT-LV60PG484AC1/I0">gw5at60b-002</Device>
+    <Device name="GW5AST-138B" pn="GW5AST-LV138PG484AC1/I0">gw5ast138b-011</Device>
     <FileList>
-        <File path="src/console60k/pll_27.v" type="file.verilog" enable="1"/>
-        <File path="src/console60k/pll_ddr3.v" type="file.verilog" enable="1"/>
-        <File path="src/console60k/pll_hdmi.v" type="file.verilog" enable="1"/>
+        <File path="src/console138k/pll_27.v" type="file.verilog" enable="1"/>
+        <File path="src/console138k/pll_27_mod.v" type="file.verilog" enable="1"/>
+        <File path="src/console138k/pll_ddr3.v" type="file.verilog" enable="1"/>
+        <File path="src/console138k/pll_ddr3_mod.v" type="file.verilog" enable="1"/>
+        <File path="src/console138k/pll_hdmi.v" type="file.verilog" enable="1"/>
+        <File path="src/console138k/pll_hdmi_mod.v" type="file.verilog" enable="1"/>
         <File path="src/ddr3_framebuffer.v" type="file.verilog" enable="1"/>
         <File path="src/ddr3_memory_interface/ddr3_memory_interface.v" type="file.verilog" enable="1"/>
         <File path="src/framebuffer2_top.v" type="file.verilog" enable="1"/>
@@ -21,9 +24,9 @@
         <File path="src/hdmi2/serializer.sv" type="file.verilog" enable="1"/>
         <File path="src/hdmi2/source_product_description_info_frame.sv" type="file.verilog" enable="1"/>
         <File path="src/hdmi2/tmds_channel.sv" type="file.verilog" enable="1"/>
-        <File path="src/pll_mDRP_intf.v" type="file.verilog" enable="1"/>
-        <File path="src/console60k/console60k.cst" type="file.cst" enable="1"/>
-        <File path="src/framebuffer2.sdc" type="file.sdc" enable="1"/>
+        <File path="src/pll_init.v" type="file.verilog" enable="1"/>
+        <File path="src/console138k/console138k.cst" type="file.cst" enable="1"/>
+        <File path="src/framebuffer2_138k.sdc" type="file.sdc" enable="1"/>
         <File path="src/framebuffer2.rao" type="file.gao" enable="0"/>
         <File path="src/write.rao" type="file.gao" enable="0"/>
     </FileList>

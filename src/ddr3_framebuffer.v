@@ -23,6 +23,8 @@
 //   prefetch  0  4  8 12 16 20 24 28 32 36 40        WIDTH-4
 // - Writes are handled in 4 pixel chunks too. Whenever we have 4 pixels
 //   accumulated, we write them to DDR3. Reading takes precedence over writing.
+//
+// 8/2025: added support for 138K
 module ddr3_framebuffer #(
     parameter WIDTH = 640,           // multiples of 4
     parameter HEIGHT = 480, 
@@ -74,6 +76,8 @@ module ddr3_framebuffer #(
 	output [2:0]        tmds_d_p
 );
 
+`include "config.vh"
+
 /////////////////////////////////////////////////////////////////////
 // Clocks
 wire hclk, hclk5;
@@ -94,14 +98,34 @@ reg pll_stop_r;
 // 74.25   pixel clock
 // 371.25  5x pixel clock
 // 297     DDR3 clock
+`ifdef CONSOLE_138K
+pll_ddr3 pll_ddr3_inst(
+    .clkin(clk_27), 
+    .clkout0(), 
+    .clkout2(memory_clk), 
+    .enclk2(pll_stop),      // 138K: pll_stop connected directly to enclk2
+    .reset(~pll_lock_27),
+    .lock(pll_lock), 
+    .init_clk(clk_g)
+);
+
+// 74.25 -> 371.25 TMDS clock
+pll_hdmi pll_hdmi_inst(
+    .clkin(clk_x1),
+    .clkout0(hclk5),
+    .clkout1(hclk),
+    .init_clk(clk_g)
+);
+
+`else
+
 pll_ddr3 pll_ddr3_inst(
     .lock(pll_lock), 
     .clkout0(), 
-//    .clkout1(), 
     .clkout2(memory_clk), 
     .clkin(clk_27), 
     .reset(~pll_lock_27),
-    .mdclk(clk_g), 
+    .mdclk(clk_g),          // 60K: use Dynamic Reconfiguration Port (mDRP) to stop PLL
     .mdopc(mdrp_op),        // 0: nop, 1: write, 2: read
     .mdainc(mdrp_inc),      // increment register address
     .mdwdi(mdrp_wdata),     // data to be written
@@ -135,6 +159,7 @@ always@(posedge clk_g) begin
         pll_stop_count <= pll_stop_count + 1;
     end
 end
+`endif
 
 /////////////////////////////////////////////////////////////////////
 // DDR3 controller
