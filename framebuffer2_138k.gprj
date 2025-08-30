@@ -27,7 +27,8 @@
         <File path="src/pll_init.v" type="file.verilog" enable="1"/>
         <File path="src/console138k/console138k.cst" type="file.cst" enable="1"/>
         <File path="src/framebuffer2_138k.sdc" type="file.sdc" enable="1"/>
+        <File path="src/ddr_fifo.rao" type="file.gao" enable="0"/>
         <File path="src/framebuffer2.rao" type="file.gao" enable="0"/>
-        <File path="src/write.rao" type="file.gao" enable="0"/>
+        <File path="src/write.rao" type="file.gao" enable="1"/>
     </FileList>
 </Project>

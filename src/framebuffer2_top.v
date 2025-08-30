@@ -52,7 +52,7 @@ reg [18:0] fb_addr;     // 640*480
 reg [17:0] fb_data;     // RGB666
 reg fb_we;
 
-wire overlay = ~key;
+wire overlay = 0; // ~key;
 reg frame_end, frame_end_r;
 reg overlay_r;
 reg overlay_we;
@@ -137,6 +137,7 @@ reg [15:0] frame_cnt;
 //`define FIXED_BLOCK
 
 reg [2:0] pattern;
+reg [1:0] speed = 3;    // 0: no write, 1: write every 2 cycles, 2: write every 3 cycles, 3: write every 4 cycles
 
 localparam PATTERN_GRID = 0;
 localparam PATTERN_GRADIENT = 1;
@@ -165,7 +166,7 @@ always @(posedge clk_g) begin           // test use 50Mhz to drive updates
         end
 
         // generate pixel writes and cursor movement
-        if (delay == 0) begin
+        if (delay == 0 && speed != 0) begin
             // output pixel
             wr_x <= wr_x + 1;
             if (wr_x == 639) begin
@@ -197,7 +198,7 @@ always @(posedge clk_g) begin           // test use 50Mhz to drive updates
                 end
             end
 `endif
-            delay <= 3;
+            delay <= speed;
         end
     end else begin
         overlay_r <= overlay;
@@ -226,6 +227,31 @@ always @(posedge clk_g) begin           // test use 50Mhz to drive updates
     end
 end
 
+
+// press button to change speed
+reg [21:0] key_debounce = 22'h3fffff;  // about 0.1 second
+reg key_prev = 1'b1;  // previous button state
+always @(posedge clk_g) begin
+    if (~rst_n) begin
+        key_debounce <= 22'h3fffff;
+        key_prev <= 1'b1;
+        speed <= 3;
+    end else begin
+        key_prev <= key;  // store previous button state
+        
+        if (key_prev && ~key) begin  // detect falling edge (button press)
+            if (key_debounce == 0) begin  // only if debounce period has elapsed
+                speed <= speed - 1;
+                key_debounce <= 22'h3fffff;  // reset debounce counter
+            end
+        end else if (key_debounce != 0) begin  // count down debounce timer
+            key_debounce <= key_debounce - 1;
+        end
+    end
+end
+
+
+
 always @* begin
     if (   wr_y[9:3] >= block_y && wr_y[9:3] < block_y+4 
         && wr_x[9:3] >= block_x && wr_x[9:3] < block_x+4) begin
@@ -249,6 +275,6 @@ always @* begin
         overlay_color = 15'b0;
 end
 
-assign leds = ~{6'b0, ~key, init_calib_complete};
+assign leds = ~{4'b0, speed, ~key, init_calib_complete};
 
 endmodule
