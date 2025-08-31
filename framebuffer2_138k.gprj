@@ -11,6 +11,7 @@
         <File path="src/console138k/pll_ddr3_mod.v" type="file.verilog" enable="1"/>
         <File path="src/console138k/pll_hdmi.v" type="file.verilog" enable="1"/>
         <File path="src/console138k/pll_hdmi_mod.v" type="file.verilog" enable="1"/>
+        <File path="src/console138k/pll_init.v" type="file.verilog" enable="1"/>
         <File path="src/ddr3_framebuffer.v" type="file.verilog" enable="1"/>
         <File path="src/ddr3_memory_interface/ddr3_memory_interface.v" type="file.verilog" enable="1"/>
         <File path="src/framebuffer2_top.v" type="file.verilog" enable="1"/>
@@ -24,11 +25,10 @@
         <File path="src/hdmi2/serializer.sv" type="file.verilog" enable="1"/>
         <File path="src/hdmi2/source_product_description_info_frame.sv" type="file.verilog" enable="1"/>
         <File path="src/hdmi2/tmds_channel.sv" type="file.verilog" enable="1"/>
-        <File path="src/pll_init.v" type="file.verilog" enable="1"/>
         <File path="src/console138k/console138k.cst" type="file.cst" enable="1"/>
         <File path="src/framebuffer2_138k.sdc" type="file.sdc" enable="1"/>
         <File path="src/ddr_fifo.rao" type="file.gao" enable="0"/>
         <File path="src/framebuffer2.rao" type="file.gao" enable="0"/>
-        <File path="src/write.rao" type="file.gao" enable="1"/>
+        <File path="src/write.rao" type="file.gao" enable="0"/>
     </FileList>
 </Project>
