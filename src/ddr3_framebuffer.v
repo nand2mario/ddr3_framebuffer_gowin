@@ -143,7 +143,7 @@ reg mdrp_wr;
 reg [7:0] pll_stop_count;
 pll_mDRP_intf u_pll_mDRP_intf(
     .clk(clk_g),
-    .rst_n(1'b1),
+    .rst_n(pll_lock_27),
     .pll_lock(pll_lock),
     .wr(mdrp_wr),
     .mdrp_inc(mdrp_inc),
@@ -475,27 +475,43 @@ always @(posedge clk_x1) begin
     end
 end
 
+reg cmd_done, data_done;
+
 // actual framebuffer DDR3 read/write
 always @(posedge clk_x1) begin
     app_en <= 0;
     app_wdf_wren <= 0;
 
     if (ddr_rst) begin
-        read_pixels_ack <= 0;
+        read_pixels_ack <= read_pixels_req;
+        write_pixels_ack <= write_pixels_req;
+        cmd_done <= 0;
+        data_done <= 0;
     end else begin
-        // prefetch 32 pixels in advance
-        if (read_pixels_req ^ read_pixels_ack && app_rdy && app_wdf_rdy) begin
-            app_en <= 1;
-            app_cmd <= 3'b001;
-            app_addr <= rd_addr;
-            read_pixels_ack <= read_pixels_req;
-        end else if (write_pixels_req ^ write_pixels_ack && app_rdy && app_wdf_rdy) begin
-            // on write_pixels_req, write 8 pixels to framebuffer
-            app_en <= 1;
-            app_cmd <= 3'b000;
-            app_addr <= wr_addr;
-            app_wdf_wren <= 1;
-            write_pixels_ack <= write_pixels_req;
+        if (read_pixels_req ^ read_pixels_ack) begin   // process reads
+            if (app_rdy) begin
+                app_en <= 1;
+                app_cmd <= 3'b001;
+                app_addr <= rd_addr;
+                read_pixels_ack <= read_pixels_req;
+            end
+        end else if (write_pixels_req ^ write_pixels_ack) begin // process writes
+            if (!cmd_done && app_rdy) begin   // send command next cycle
+                app_en <= 1'b1;
+                app_cmd <= 3'b000;
+                app_addr <= wr_addr;
+                cmd_done <= 1'b1;
+            end
+            if (!data_done && app_wdf_rdy) begin   // send data next cycle
+                app_wdf_wren <= 1;
+                data_done <= 1'b1;
+            end
+            if ((cmd_done | app_rdy) & (data_done | app_wdf_rdy)) begin
+                // whole transaction is done
+                write_pixels_ack <= write_pixels_req;
+                cmd_done <= 0;
+                data_done <= 0;
+            end
         end
     end
 end

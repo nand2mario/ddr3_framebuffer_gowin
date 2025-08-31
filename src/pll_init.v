@@ -1,223 +1,398 @@
-`timescale 1ns/1ns
+`timescale  1ns/1ns
 
-module PLL_INIT
-#(
-parameter CLK_PERIOD = 50,
-parameter MULTI_FAC  = 30
+
+module PLL_INIT #
+(   parameter       CLK_PERIOD  = 20       
+,   parameter       MULTI_FAC   = 24
 )
-(
-input CLKIN,
-input I_RST,
-input PLLLOCK,
-output O_RST,
-output [5:0] ICPSEL,
-output [2:0] LPFRES,
-output O_LOCK
+(   input           I_RST
+,   input           I_MD_CLK
+
+,   output          O_RST
+
+,   output          O_MD_INC
+,   output [1:0]    O_MD_OPC
+,   output [7:0]    O_MD_WR_DATA
+,   input  [7:0]    I_MD_RD_DATA
+
+,   input           I_LOCK
+,   output          O_LOCK
+
+,   input PLL_INIT_BYPASS
+,   output [7:0] MDRDO
+,   input [1:0] MDOPC
+,   input MDAINC
+,   input [7:0] MDWDI
+
 
 );
 
-localparam WAIT_TIME = 'd2000_000;      
-localparam WAIT_CNT = (WAIT_TIME + CLK_PERIOD - 1) / CLK_PERIOD; 
-localparam WAIT_WIDTH = $clog2(WAIT_CNT + 1);
+`ifdef SIM
+`define     DL     #1
+`else
+`define     DL
+`endif
 
-reg [WAIT_WIDTH-1:0] waitcnt = 'd0;
-reg [3:0] RomAddr = 'd0;
-reg [15:0] Rom [15:0];
-reg [15:0] RomDreg ='d0;
-wire [5:0] Regicp = RomDreg[5:0];
-wire [2:0] Regres = RomDreg[10:8];
-reg Waitlock = 'd0;
-reg [7:0] locksig = 8'b0000_0000;
-reg laststep = 1'b0;
+`ifdef  SIM
+localparam  WAIT_TIME   = 'd8_000;
+localparam  LOCK_TIME   = 'd2_000;
+`else
+localparam  WAIT_TIME   = 'd800_000;
+localparam  LOCK_TIME   = 'd200_000;
+`endif
+localparam  WAIT_CNT    = (WAIT_TIME + CLK_PERIOD - 1) / CLK_PERIOD;    //! 1ms
+localparam  LOCK_CNT    = (LOCK_TIME + CLK_PERIOD - 1) / CLK_PERIOD;
+localparam  WW          = $clog2(WAIT_CNT + 1);
+localparam  LW          = $clog2(LOCK_CNT + 1);
 
-wire validsig = RomDreg[12];
-reg [1:0]enable_r = 2'b00;
+localparam  INIT_STEP_0 = 4'd0
+,           INIT_STEP_1 = 4'd1
+,           INIT_STEP_2 = 4'd2
+,           INIT_STEP_3 = 4'd3
+,           INIT_STEP_4 = 4'd4
+,           INIT_STEP_5 = 4'd5
+,           INIT_STEP_6 = 4'd6
+,           INIT_STEP_7 = 4'd7
+,           INIT_STEP_8 = 4'd8
+,           INIT_STEP_9 = 4'd9
+;
 
-wire Enable = enable_r[1];
-always @(posedge CLKIN or posedge I_RST)
-begin
-    if (I_RST)
-        enable_r <= 2'b00;
-    else
-        begin
-            enable_r <= {enable_r[0], 1'b1};
-        end
-end 
+reg  [   1:0]   rEnable     = 'b0;
 
-always @(posedge CLKIN or negedge Enable)
-begin
-    if (Enable == 1'b0)
-        begin
-            RomDreg <= 16'h0000;
-            
-            Rom[00] <= 16'h1400;    //1
-            Rom[01] <= (MULTI_FAC > 34) ? 16'h1401
-                    :  (MULTI_FAC > 16) ? 16'h1400
-                    :                     16'h1400;    //2
-            Rom[02] <= (MULTI_FAC > 34) ? 16'h1501
-                    :  (MULTI_FAC > 16) ? 16'h1500
-                    :                     16'h1500;    //3
-            Rom[03] <= (MULTI_FAC > 34) ? 16'h1503
-                    :  (MULTI_FAC > 16) ? 16'h1501
-                    :                     16'h1500;    //4
-            Rom[04] <= (MULTI_FAC > 34) ? 16'h1507
-                    :  (MULTI_FAC > 16) ? 16'h1503
-                    :                     16'h1501;    //5
-            Rom[05] <= (MULTI_FAC > 34) ? 16'h0605
-                    :  (MULTI_FAC > 16) ? 16'h0602
-                    :                     16'h0601;    //6
-            Rom[06] <= 16'h0000;    //over
-                        
-            Rom[07] <= (MULTI_FAC > 34) ? 16'h1402
-                    :  (MULTI_FAC > 16) ? 16'h1401
-                    :                     16'h1400;    //2.5
-            Rom[08] <= (MULTI_FAC > 34) ? 16'h1502
-                    :  (MULTI_FAC > 16) ? 16'h1501
-                    :                     16'h1500;    //3.5
-            Rom[09] <= (MULTI_FAC > 34) ? 16'h1504
-                    :  (MULTI_FAC > 16) ? 16'h1502
-                    :                     16'h1501;    //4.5
-            Rom[10] <= (MULTI_FAC > 34) ? 16'h1603
-                    :  (MULTI_FAC > 16) ? 16'h1601
-                    :                     16'h1600;    //5.5
-            Rom[11] <= 16'h1400;    //1.5
-            Rom[12] <= 16'h0000;
-            Rom[13] <= 16'h0000;
-            Rom[14] <= 16'h0000;
-            Rom[15] <= 16'h0000;
-        end
-    else
-        RomDreg <= Rom[RomAddr[3:0]];
+reg             rRomRd      = 'b0;
+reg  [   7:0]   rRomAddr    = 'b0;
+reg  [  24:0]   rRomData    = 'b0;
+
+reg  [   2:0]   rReqCnt     = 'b0;
+reg  [   4:0]   rLoopCnt    = 'b0;
+
+reg  [   3:0]   rChkOkCnt   = 'b0;
+reg  [   5:0]   rChkStart   = 'b0;
+
+reg  [   3:0]   rInitFsmC   = INIT_STEP_0   ;
+reg  [   3:0]   rInitFsmN   = INIT_STEP_1   ;
+
+reg  [   7:0]   rMdAddr     = 'b0;
+
+reg             rMdInc      = 'b0;
+reg  [   1:0]   rMdOpc      = 'b0;
+reg  [   7:0]   rMdDOut     = 'b0;
+
+reg  [   7:0]   rChkFlag    = 'b0;
+
+reg             rLockReg    = 'b0;
+reg  [LW-1:0]   rLockCnt    = 'b0;
+reg             rLocked     = 'b0;
+reg  [WW-1:0]   rWaitCnt    = 'b0;
+
+reg             rLastStep   = 'b0;
+
+reg             rLockOut    = 'b0;
+
+reg             rChkVld     = 'b0;
+reg  [   7:0]   rRomAddrVld = 'b0;
+
+reg             rRstOut     = 1'b1;
+
+wire            wEnable     = rEnable[1];
+wire [   7:0]   wMdAddrNext = rMdAddr + 2'd1;
+wire            wLocked     = (rLockCnt >= LOCK_CNT);
+
+wire            wIsStep0    = (rInitFsmC == INIT_STEP_0);
+wire            wIsStep1    = (rInitFsmC == INIT_STEP_1);
+wire            wIsStep2    = (rInitFsmC == INIT_STEP_2);
+wire            wIsStep3    = (rInitFsmC == INIT_STEP_3);
+wire            wIsStep4    = (rInitFsmC == INIT_STEP_4);
+wire            wIsStep5    = (rInitFsmC == INIT_STEP_5);
+wire            wIsStep6    = (rInitFsmC == INIT_STEP_6);
+wire            wIsStep7    = (rInitFsmC == INIT_STEP_7);
+wire            wIsStep8    = (rInitFsmC == INIT_STEP_8);
+wire            wIsStep9    = (rInitFsmC == INIT_STEP_9);
+
+wire            wReqOver    = ~rRomData[24];
+wire            wMdrpReq    = rRomData[24];
+wire            wWaitLock   = rReqCnt[2];//(rReqCnt == 4);
+
+
+wire [   7:0]   wReqAddr    = rRomData[16+:8];
+wire [   7:0]   wReqMask    = rRomData[ 8+:8];
+wire [   7:0]   wReqData    = rRomData[ 0+:8];
+
+
+localparam  ROM_FILE = "";
+
+reg  [  27:0]   rRomDReg    = 'b0;
+
+
+reg    [27:0]  rRom    [63:0];
+
+
+always @ (posedge PLL_INIT_BYPASS or posedge I_MD_CLK or posedge I_RST) begin
+    if (PLL_INIT_BYPASS || I_RST)  rEnable <=`DL 2'b00;
+    else        rEnable <=`DL {rEnable[0], 1'b1};
 end
 
-reg [3:0]RomAddrVld = 'd0;
+generate
+if (ROM_FILE != "") begin: ram_init_file
+    initial begin
+        $readmemh (ROM_FILE, rRom);
+    end
+
+    always @ (posedge I_MD_CLK) begin
+        rRomDReg    <=`DL rRom[rRomAddr[5:0]];
+    end
+end else begin : ram_init
+    always @ (posedge I_MD_CLK) begin
+        if (~rEnable[1]) begin
+            rRomDReg    <=`DL 28'h000_0000;
+//1
+            rRom[00]    <=`DL (MULTI_FAC > 34)  ? 28'h10B_3F03
+                         :    (MULTI_FAC > 16)  ? 28'h10B_3F01
+                         :                        28'h10B_3F00;
+            rRom[01]    <=`DL 28'h10C_E080;
+            rRom[02]    <=`DL 28'h111_0701;
+            rRom[03]    <=`DL 28'h112_0C08;
+//2
+            rRom[04]    <=`DL (MULTI_FAC > 34)  ? 28'h10B_3F03
+                         :    (MULTI_FAC > 16)  ? 28'h10B_3F01
+                         :                        28'h10B_3F00;
+            rRom[05]    <=`DL 28'h10C_E080;
+            rRom[06]    <=`DL 28'h111_0703;
+            rRom[07]    <=`DL 28'h112_0C08;
+//3
+            rRom[08]    <=`DL (MULTI_FAC > 34)  ? 28'h10B_3F03
+                         :    (MULTI_FAC > 16)  ? 28'h10B_3F01
+                         :                        28'h10B_3F00;
+            rRom[09]    <=`DL 28'h10C_E0A0;
+            rRom[10]    <=`DL 28'h111_0703;
+            rRom[11]    <=`DL 28'h112_0C08;
+//4
+            rRom[12]    <=`DL (MULTI_FAC > 34)  ? 28'h10B_3F03
+                         :    (MULTI_FAC > 16)  ? 28'h10B_3F01
+                         :                        28'h10B_3F00;
+            rRom[13]    <=`DL 28'h10C_E0A0;
+            rRom[14]    <=`DL 28'h111_0707;
+            rRom[15]    <=`DL 28'h112_0C08;
+//5
+            rRom[16]    <=`DL (MULTI_FAC > 34)  ? 28'h10B_3F07
+                         :    (MULTI_FAC > 16)  ? 28'h10B_3F03
+                         :                        28'h10B_3F01;
+            rRom[17]    <=`DL 28'h10C_E0A0;
+            rRom[18]    <=`DL 28'h111_0707;
+            rRom[19]    <=`DL 28'h112_0C08;
+//6
+            rRom[20]    <=`DL (MULTI_FAC > 34)  ? 28'h10B_3F05
+                         :    (MULTI_FAC > 16)  ? 28'h10B_3F02
+                         :                        28'h10B_3F01;
+            rRom[21]    <=`DL 28'h10C_E0C0;
+            rRom[22]    <=`DL 28'h111_0707;
+            rRom[23]    <=`DL 28'h112_0C08;
+//over
+            rRom[24]    <=`DL 28'h000_0000;
+            rRom[25]    <=`DL 28'h000_0000;
+            rRom[26]    <=`DL 28'h000_0000;
+            rRom[27]    <=`DL 28'h000_0000;
+//1.5
+            rRom[28]    <=`DL (MULTI_FAC > 34)  ? 28'h10B3F03
+                         :    (MULTI_FAC > 16)  ? 28'h10B3F01
+                         :                        28'h10B3F00;
+            rRom[29]    <=`DL 28'h10CE080;
+            rRom[30]    <=`DL 28'h1110702;
+            rRom[31]    <=`DL 28'h1120C08;
+//2.5
+            rRom[32]    <=`DL (MULTI_FAC > 34)  ? 28'h10B3F05
+                         :    (MULTI_FAC > 16)  ? 28'h10B3F02
+                         :                        28'h10B3F00;
+            rRom[33]    <=`DL 28'h10CE080;
+            rRom[34]    <=`DL 28'h1110703;
+            rRom[35]    <=`DL 28'h1120C08;
+//3.5
+            rRom[36]    <=`DL (MULTI_FAC > 34)  ? 28'h10B3F03
+                         :    (MULTI_FAC > 16)  ? 28'h10B3F01
+                         :                        28'h10B3F00;
+            rRom[37]    <=`DL 28'h10CE0A0;
+            rRom[38]    <=`DL 28'h1110704;
+            rRom[39]    <=`DL 28'h112_0C08;
+
+//4.5
+            rRom[40]    <=`DL (MULTI_FAC > 34)  ? 28'h10B3F04
+                         :    (MULTI_FAC > 16)  ? 28'h10B3F02
+                         :                        28'h10B3F00;
+            rRom[41]    <=`DL 28'h10CE0A0;
+            rRom[42]    <=`DL 28'h1110707;
+            rRom[43]    <=`DL 28'h1120C08;
+
+//5.5
+            rRom[44]    <=`DL (MULTI_FAC > 34)  ? 28'h10B3F03
+                         :    (MULTI_FAC > 16)  ? 28'h10B3F01
+                         :                        28'h10B3F00;
+            rRom[45]    <=`DL 28'h10CE0C0;
+            rRom[46]    <=`DL 28'h1110707;
+            rRom[47]    <=`DL 28'h1120C08;
+
+            rRom[48]    <=`DL 28'h000_0000;
+            rRom[49]    <=`DL 28'h000_0000;
+            rRom[50]    <=`DL 28'h000_0000;
+            rRom[51]    <=`DL 28'h000_0000;
+            rRom[52]    <=`DL 28'h000_0000;
+            rRom[53]    <=`DL 28'h000_0000;
+            rRom[54]    <=`DL 28'h000_0000;
+            rRom[55]    <=`DL 28'h000_0000;
+            rRom[56]    <=`DL 28'h000_0000;
+            rRom[57]    <=`DL 28'h000_0000;
+            rRom[58]    <=`DL 28'h000_0000;
+            rRom[59]    <=`DL 28'h000_0000;
+            rRom[60]    <=`DL 28'h000_0000;
+            rRom[61]    <=`DL 28'h000_0000;
+            rRom[62]    <=`DL 28'h000_0000;
+            rRom[63]    <=`DL 28'h000_0000;
+
+
+        end else
+            rRomDReg    <=`DL rRom[rRomAddr[5:0]];
+    end
+end
+endgenerate
+
+
 always @ (*) begin
-    casex (locksig[5:0])
-        6'b111_111  :   RomAddrVld = 4'd8;
-        6'b011_111  :   RomAddrVld = 4'd8;
-        6'b111_110  :   RomAddrVld = 4'd8;
-        6'b111_10x  :   RomAddrVld = 4'd9;
-        6'bx01_111  :   RomAddrVld = 4'd7;
-        6'b011_110  :   RomAddrVld = 4'd8;
-        6'bxx0_111  :   RomAddrVld = 4'd1;
-        6'bx01_110  :   RomAddrVld = 4'd2;
-        6'b011_10x  :   RomAddrVld = 4'd3;
-        6'b111_0xx  :   RomAddrVld = 4'd4;
-                                     
-        6'bxxx_011  :   RomAddrVld = 4'd1;
-        6'bxx0_110  :   RomAddrVld = 4'd7;
-        6'bx01_100  :   RomAddrVld = 4'd8;
-        6'b011_000  :   RomAddrVld = 4'd9;
-        6'b110_000  :   RomAddrVld = 4'd10;
-        6'bxxx_x01  :   RomAddrVld = 4'd0;
-        6'bxxx_010  :   RomAddrVld = 4'd1;
-        6'bxx0_100  :   RomAddrVld = 4'd2;
-        6'bx01_000  :   RomAddrVld = 4'd3;
-        6'b010_000  :   RomAddrVld = 4'd4;
-        6'b100_000  :   RomAddrVld = 4'd5;
-                                     
-        6'b000_000  :   RomAddrVld = 4'd8;
-                                     
-        default     :   RomAddrVld = 4'd8;
-    endcase                          
+    casex (rChkFlag[5:0])
+        6'b111_111  :   {rChkVld, rRomAddrVld} = 9'b1_0000_1000;
+        6'b011_111  :   {rChkVld, rRomAddrVld} = 9'b1_0000_1000;
+        6'b111_110  :   {rChkVld, rRomAddrVld} = 9'b1_0000_1100;
+        6'b111_10x  :   {rChkVld, rRomAddrVld} = 9'b1_0000_1100;
+        6'bx01_111  :   {rChkVld, rRomAddrVld} = 9'b1_0000_0100;
+        6'b011_110  :   {rChkVld, rRomAddrVld} = 9'b1_0000_1000;
+        6'bxx0_111  :   {rChkVld, rRomAddrVld} = 9'b1_0000_0100;
+        6'bx01_110  :   {rChkVld, rRomAddrVld} = 9'b1_0000_1000;
+        6'b011_10x  :   {rChkVld, rRomAddrVld} = 9'b1_0000_1100;
+        6'b111_0xx  :   {rChkVld, rRomAddrVld} = 9'b1_0001_0000;
+
+        6'bxxx_011  :   {rChkVld, rRomAddrVld} = 9'b1_0001_1100;
+        6'bxx0_110  :   {rChkVld, rRomAddrVld} = 9'b1_0010_0000;
+        6'bx01_100  :   {rChkVld, rRomAddrVld} = 9'b1_0010_0100;
+        6'b011_000  :   {rChkVld, rRomAddrVld} = 9'b1_0010_1000;
+        6'b110_000  :   {rChkVld, rRomAddrVld} = 9'b1_0010_1100;
+        6'bxxx_x01  :   {rChkVld, rRomAddrVld} = 9'b1_0000_0000;
+        6'bxxx_010  :   {rChkVld, rRomAddrVld} = 9'b1_0000_0100;
+        6'bxx0_100  :   {rChkVld, rRomAddrVld} = 9'b1_0000_1000;
+        6'bx01_000  :   {rChkVld, rRomAddrVld} = 9'b1_0000_1100;
+        6'b010_000  :   {rChkVld, rRomAddrVld} = 9'b1_0001_0000;
+        6'b100_000  :   {rChkVld, rRomAddrVld} = 9'b1_0001_0100;
+
+        6'b000_000  :   {rChkVld, rRomAddrVld} = 9'b0_0000_0000;
+
+        default     :   {rChkVld, rRomAddrVld} = 9'b0_0000_0000;
+    endcase
+end
+
+always @ (posedge I_MD_CLK) begin
+    rInitFsmC   <=`DL wEnable   ? rInitFsmN : INIT_STEP_0;
+//!_____________________________________________________________________________
+    rRomRd      <=`DL wEnable & (wIsStep1 | wIsStep6 & ~wWaitLock);
+//!_____________________________________________________________________________
+    rRomData    <=`DL rRomRd    ? rRomDReg[24:0] : rRomData;
+//!_____________________________________________________________________________
+    rRomAddr    <=`DL ~wEnable              ? 8'd0
+                 :    (wIsStep3 & wReqOver) ? rRomAddrVld
+                 :    rRomRd                ? rRomAddr + 1'd1
+                 :                            rRomAddr;
+//!_____________________________________________________________________________
+    rLastStep   <=`DL wEnable & (wIsStep3 & wReqOver | rLastStep);
+//!_____________________________________________________________________________
+    rReqCnt     <=`DL ~wEnable              ? 3'd0
+                 :    wIsStep7              ? 3'd0
+                 :    wIsStep5              ? rReqCnt + 1'd1
+                 :                            rReqCnt;
+//!_____________________________________________________________________________
+    rLoopCnt    <=`DL ~wEnable              ? 3'd0
+                 :    wIsStep8              ? rLoopCnt + 1'd1
+                 :                            rLoopCnt;
+//!_____________________________________________________________________________
+    rLockReg    <=`DL wEnable & I_LOCK;
+//!_____________________________________________________________________________
+    rLockCnt    <=`DL (~wEnable)            ? {LW{1'b0}}
+                 :    (~wIsStep7&~wIsStep9) ? {LW{1'b0}}
+                 :    (~rLockReg)           ? {LW{1'b0}}
+                 :    (rLockCnt<LOCK_CNT)   ? rLockCnt + 1'd1
+                 :                            rLockCnt;
+//!_____________________________________________________________________________
+    rLocked     <=`DL wLocked;
+//!_____________________________________________________________________________
+    rWaitCnt    <=`DL wIsStep3              ? WAIT_CNT[0+:WW]
+                :     ~wIsStep7             ? rWaitCnt
+                :     (|rWaitCnt)           ? rWaitCnt - 1'd1
+                :                             {WW{1'b0}};
+//!_____________________________________________________________________________
+    if (~wEnable)                   rChkFlag                <=`DL 8'h00;
+    else if (wIsStep7 & rLocked)    rChkFlag[rLoopCnt[2:0]] <=`DL 1'b1;
+//!_____________________________________________________________________________
+    rChkOkCnt   <=`DL ~wEnable              ? 4'd0
+                 :    ~wIsStep7             ? rChkOkCnt
+                 :    (rWaitCnt==0)         ? 4'd0
+                 :    rLocked               ? rChkOkCnt + 1'd1
+                 :                            rChkOkCnt;
+end
+
+always @(*) begin
+    if (~wEnable)   rInitFsmN   =`DL INIT_STEP_1;
+    else case (rInitFsmC) /* synthesis full_case */
+        INIT_STEP_0 : rInitFsmN =`DL INIT_STEP_1;
+        INIT_STEP_1 : rInitFsmN =`DL INIT_STEP_2;
+        INIT_STEP_2 : rInitFsmN =`DL INIT_STEP_3;
+        INIT_STEP_3 : rInitFsmN =`DL wWaitLock             ? INIT_STEP_7
+                                : wReqOver & rLastStep  ? INIT_STEP_9
+                                : wReqOver &~rLastStep  ? INIT_STEP_1
+                                : (rMdAddr >= wReqAddr) ? INIT_STEP_4
+                                :                         INIT_STEP_3;
+        INIT_STEP_4 : rInitFsmN =`DL INIT_STEP_5;
+        INIT_STEP_5 : rInitFsmN =`DL INIT_STEP_6;
+        INIT_STEP_6 : rInitFsmN =`DL INIT_STEP_2;
+        INIT_STEP_7 : rInitFsmN =`DL (rWaitCnt==0)         ? INIT_STEP_8
+                                : ~rLocked              ? INIT_STEP_7
+                                : rLastStep             ? INIT_STEP_9
+                                :                         INIT_STEP_8;
+        INIT_STEP_8 : rInitFsmN =`DL ~rLastStep            ? INIT_STEP_1
+                                : rChkVld               ? INIT_STEP_1
+                                :                         INIT_STEP_9;
+        INIT_STEP_9 : rInitFsmN =`DL INIT_STEP_9;
+        default     : rInitFsmN =`DL INIT_STEP_9;
+    endcase
+end
+
+always @ (posedge I_MD_CLK) begin
+    rMdOpc      <=`DL ~wEnable  ? 2'b00
+                 :    wIsStep7  ? 2'b00
+                 :    wIsStep5  ? 2'b01
+                 :                2'b10;
+//!_____________________________________________________________________________
+    rMdInc      <=`DL wIsStep3 & (~rMdInc ? (rMdAddr<wReqAddr)
+                                 :          (wMdAddrNext < wReqAddr)); 
+//!_____________________________________________________________________________
+    rMdAddr     <=`DL ~wEnable  ? 8'd0
+                 :    wIsStep7  ? 8'd0
+                 :    rMdInc    ? wMdAddrNext
+                 :                rMdAddr;
+//!_____________________________________________________________________________
+    rMdDOut     <=`DL wIsStep5  ? (I_MD_RD_DATA&~wReqMask|wReqData) : rMdDOut;
+//!_____________________________________________________________________________
+     rRstOut     <=`DL ~wEnable | (~wIsStep7 & ~wIsStep9);
+//!_____________________________________________________________________________
+    rLockOut    <=`DL rLocked & wIsStep9 & rChkVld;
 end
 
 
-reg [3:0]state='d0;
-localparam IDLE  = 4'd0;
-localparam STATE1 = 4'd1;
-localparam STATE2 = 4'd2;
-localparam STATE3 = 4'd3;
-localparam STATE4 = 4'd4;
-localparam STATE5 = 4'd5;
-localparam STATE6 = 4'd6;
-localparam STATE7 = 4'd7;
+/////////////mdrp switch//////////////////////////
+assign  O_LOCK      = (PLL_INIT_BYPASS == 1'b1) ? I_LOCK : rLockOut;
+assign  O_RST       = (PLL_INIT_BYPASS == 1'b1) ? I_RST : rRstOut;
+assign  O_MD_INC    = (PLL_INIT_BYPASS == 1'b1) ? MDAINC : rMdInc;
+assign  O_MD_OPC    = (PLL_INIT_BYPASS == 1'b1) ? MDOPC : rMdOpc;
+assign  O_MD_WR_DATA= (PLL_INIT_BYPASS == 1'b1) ? MDWDI : rMdDOut;
+assign  MDRDO       = (PLL_INIT_BYPASS == 1'b1) ? I_MD_RD_DATA : 8'b0000_0000;
 
 
+/////////////////////////////////////
 
-always @(posedge CLKIN or negedge Enable)
-begin
-    if (Enable == 1'b0)
-        begin
-        state <= IDLE;
-        RomAddr<=4'b0000;
-        laststep <= 1'b0;
-        end
-    else
-        begin
-            case (state)
-                IDLE: 
-                    begin
-                    state<=STATE1;
-                    end
-                STATE1:
-                    begin
-                    state<=STATE2;
-                    end
-                STATE2:
-                    begin
-                    if (laststep==1'b1)
-                        state<=STATE7;
-                    else
-                        state<=STATE3;
-                    end
-                STATE3:
-                    begin
-                    if (Waitlock==1'b1)
-                        state<=STATE4;
-                    else
-                        state<= STATE3;
-                    end
-                STATE4:
-                    begin
-                    state<=STATE5;               
-                    end
-                STATE5:
-                    begin
-                    if (validsig==1'b1)
-                        begin
-                            RomAddr <= RomAddr + 1;
-                            state <= STATE1;
-                        end
-                    else if (validsig==1'b0 && laststep==1'b0)
-                            state <= STATE6;
-                    end
-                STATE6:
-                    begin
-                    RomAddr <= RomAddrVld;
-                    laststep <= 1'b1;
-                    state <= STATE1;
-                    end
-                STATE7:
-                    begin
-                    state<=STATE7;
-                    end
-
-                default: state<=IDLE;
-            endcase
-        end
-end
-
-always @(posedge CLKIN)
-begin
-
-
-    Waitlock <= (&waitcnt == 1'b1) ? 1'b1 : 1'b0; 
-    
-    waitcnt <= (state==STATE3) ? (waitcnt+1) : 'd0;
-    
-    if (~Enable)    locksig <= 8'b0000_0000;
-    else    if (state==STATE4)   locksig[RomAddr[3:0]] <= PLLLOCK;
-
-
-end
-
-assign ICPSEL = Regicp;
-assign LPFRES = Regres;
-assign O_RST = (~Enable) || (state==STATE2) ? 1'b1 : 1'b0;
-assign O_LOCK = (state==STATE7) ? PLLLOCK : 1'b0;
-
-endmodule
-
+endmodule//: PLL_INIT
 
 

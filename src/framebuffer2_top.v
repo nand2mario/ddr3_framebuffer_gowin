@@ -33,16 +33,16 @@ module top(
 // this defines CONSOLE_60K or CONSOLE_138K depending on include dir defined in project file
 `include "config.vh"
 
-reg rst_n = 0;
-reg [15:0] rst_cnt = 16'hffff;
+reg rst_n = 1;
+// reg [15:0] rst_cnt = 16'hffff;
 
-always @(posedge clk_g) begin
-    rst_cnt <= rst_cnt == 0 ? 0: rst_cnt - 1;
-    if (rst_cnt == 0 
-        && !key
-    )
-        rst_n <= 1;
-end
+// always @(posedge clk_g) begin
+//     rst_cnt <= rst_cnt == 0 ? 0: rst_cnt - 1;
+//     if (rst_cnt == 0 
+//         && !key
+//     )
+//         rst_n <= 1;
+// end
 
 wire clk_27, clk_x1;
 wire pll_lock_27;
