@@ -80,8 +80,7 @@ pll_27 pll_27_inst(
 ddr3_framebuffer #(
     .WIDTH(640),
     .HEIGHT(480),
-    .COLOR_BITS(18),
-    .PREFETCH_DELAY(44)             // larger than default 40 to avoid flickering at VGA resolution
+    .COLOR_BITS(18)
 ) fb (
     .clk_27(clk_27),
     .pll_lock_27(pll_lock_27),

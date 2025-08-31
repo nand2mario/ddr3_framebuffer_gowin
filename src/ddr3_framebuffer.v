@@ -28,8 +28,7 @@
 module ddr3_framebuffer #(
     parameter WIDTH = 640,           // multiples of 4
     parameter HEIGHT = 480, 
-    parameter COLOR_BITS = 18,       // RGB666
-    parameter PREFETCH_DELAY = 40    // buffer is 16 pixels, so 40 accommodates any delay between 24-40 cycles
+    parameter COLOR_BITS = 18        // RGB666
 )(
     input               clk_27,      // 27Mhz input clock
     input               clk_g,       // 50Mhz crystal
@@ -47,7 +46,6 @@ module ddr3_framebuffer #(
     input               fb_vsync,    // vertical sync signal
     input               fb_we,       // update a pixel and move to next pixel
     input [COLOR_BITS-1:0] fb_data,  // pixel data
-    input [5:0]         ddr_prefetch_delay,    // dynamic DDR3 prefetch delay (1-63, default PREFETCH_DELAY), larger if memory pressure is higher 
 
     input [15:0]        sound_left,
     input [15:0]        sound_right,
@@ -432,11 +430,6 @@ end
 always @(posedge clk) begin
     x_start <= (1280-disp_width)/2;
     x_end <= (1280+disp_width)/2;
-    if (ddr_prefetch_delay != 0) begin
-        x_prefetch_start <= x_start - ddr_prefetch_delay;
-    end else begin
-        x_prefetch_start <= x_start - PREFETCH_DELAY;       // default delay
-    end
     diff_720_height <= 720 - fb_height;
     diff_disp_width_width <= disp_width - fb_width;
 end
@@ -444,11 +437,10 @@ end
 // TODO: wrapping while prefetching is not implemented yet
 always @(posedge clk_x1) begin
     if (ddr_rst) begin
-        prefetch <= 0;
+        prefetch_x <= 0;
     end else begin
-        prefetch <= 0;
-        if (cx == x_prefetch_start) begin
-            prefetch_x <= 0;
+        if (cx == 0) begin
+            prefetch_x <= 32;      // We fetch up to prefetch_x
             prefetch_x_cnt <= fb_width;
             if (cy == 0) begin
                 prefetch_y_cnt <= 0;
@@ -460,22 +452,18 @@ always @(posedge clk_x1) begin
                     prefetch_addr_line <= prefetch_addr_line + {WIDTH, 1'b0};
                 end
             end
-        end else if (prefetch_x < fb_width) begin
+        end else if (cx >= x_start && prefetch_x < fb_width) begin
             prefetch_x_cnt <= prefetch_x_cnt + fb_width;
             if (prefetch_x_cnt >= diff_disp_width_width) begin
                 prefetch_x_cnt <= prefetch_x_cnt - diff_disp_width_width;
                 prefetch_x <= prefetch_x + 1;
-                if (prefetch_x[1:0] == 0) begin
-                    prefetch <= 1;
-                    read_pixels_req <= ~read_pixels_req;
-                    rd_addr <= {prefetch_x, 1'b0} + prefetch_addr_line;  // 0, 4, 8, 12, ...
-                end
             end
         end
     end
 end
 
 reg cmd_done, data_done;
+reg [10:0] read_x;
 
 // actual framebuffer DDR3 read/write
 always @(posedge clk_x1) begin
@@ -488,14 +476,7 @@ always @(posedge clk_x1) begin
         cmd_done <= 0;
         data_done <= 0;
     end else begin
-        if (read_pixels_req ^ read_pixels_ack) begin   // process reads
-            if (app_rdy) begin
-                app_en <= 1;
-                app_cmd <= 3'b001;
-                app_addr <= rd_addr;
-                read_pixels_ack <= read_pixels_req;
-            end
-        end else if (write_pixels_req ^ write_pixels_ack) begin // process writes
+        if (write_pixels_req ^ write_pixels_ack) begin // process writes
             if (!cmd_done && app_rdy) begin   // send command next cycle
                 app_en <= 1'b1;
                 app_cmd <= 3'b000;
@@ -512,7 +493,17 @@ always @(posedge clk_x1) begin
                 cmd_done <= 0;
                 data_done <= 0;
             end
-        end
+        end else if (read_x + 4 <= prefetch_x) begin   // process reads
+            if (app_rdy & ~app_en) begin  
+                app_en <= 1;
+                app_cmd <= 3'b001;
+                app_addr <= {read_x, 1'b0} + prefetch_addr_line;
+                read_pixels_ack <= read_pixels_req;
+                read_x <= read_x + 4;
+            end
+        end 
+
+        if (cx == x_prefetch_start) read_x <= 0;       // start new line
     end
 end
 
