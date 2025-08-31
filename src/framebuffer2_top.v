@@ -91,7 +91,7 @@ ddr3_framebuffer #(
     .init_calib_complete(init_calib_complete),
     
     // Framebuffer interface
-    .clk(clk_g),
+    .clk(clk_x1),
     .fb_width(overlay ? 256 : 640),
     .fb_height(overlay ? 224 : 480),
     .disp_width(overlay ? 1080 : 960),
@@ -136,11 +136,13 @@ reg [15:0] frame_cnt;
 //`define FIXED_BLOCK
 
 reg [2:0] pattern;
-reg [1:0] speed = 3;    // 0: no write, 1: write every 2 cycles, 2: write every 3 cycles, 3: write every 4 cycles
+reg [1:0] speed = 3;    // 0: no write (static image), 1: write every 3 cycles, 
+                        // 2: write every 4 cycles, 3: write every 5 cycles
 
-localparam PATTERN_GRID = 0;
-localparam PATTERN_GRADIENT = 1;
-localparam PATTERN_SOLID = 2;
+localparam PATTERN_GRADIENT0 = 0;
+localparam PATTERN_GRID = 1;
+localparam PATTERN_GRADIENT = 2;
+localparam PATTERN_SOLID = 3;
 
 // RGB5
 localparam GREY = 18'b100000_100000_100000;
@@ -148,7 +150,8 @@ localparam RED = 18'b111111_000000_000000;
 localparam GREEN = 18'b000000_111111_000000;
 localparam BLUE = 18'b000000_000000_111111;
 
-always @(posedge clk_g) begin           // test use 50Mhz to drive updates
+// always @(posedge clk_g) begin           // test use 50Mhz to drive updates
+always @(posedge clk_x1) begin
     if (ddr_rst) begin
         delay <= 3;
         wr_x <= 0; wr_y <= 0;
@@ -186,7 +189,7 @@ always @(posedge clk_g) begin           // test use 50Mhz to drive updates
                     if (block_y >= 480/8-1) begin
                         block_y <= 0;
                         pattern <= pattern + 1;
-                        if (pattern == 2)
+                        if (pattern == 3)
                             pattern <= 0;
                     end
                 end
@@ -197,7 +200,7 @@ always @(posedge clk_g) begin           // test use 50Mhz to drive updates
                 end
             end
 `endif
-            delay <= speed;
+            delay <= speed + 1;
         end
     end else begin
         overlay_r <= overlay;
@@ -230,7 +233,7 @@ end
 // press button to change speed
 reg [21:0] key_debounce = 22'h3fffff;  // about 0.1 second
 reg key_prev = 1'b1;  // previous button state
-always @(posedge clk_g) begin
+always @(posedge clk_x1) begin
     if (~rst_n) begin
         key_debounce <= 22'h3fffff;
         key_prev <= 1'b1;
@@ -256,6 +259,8 @@ always @* begin
         && wr_x[9:3] >= block_x && wr_x[9:3] < block_x+4) begin
         fb_data = GREEN;
     end else case (pattern)
+        PATTERN_GRADIENT0:
+            fb_data = {6'b0, 6'b0, wr_x[5:0]};
         PATTERN_SOLID: 
             fb_data = bg_color;
         PATTERN_GRADIENT:

@@ -1,6 +1,6 @@
 [General]
-ipc_version=4
 file=ddr3_memory_interface
+ipc_version=4
 module=DDR3_Memory_Interface_Top
 target_device=gw5a25b-006
 type=ddr3
@@ -32,8 +32,10 @@ RANK_ADDR=1
 ROW_ADDR=2
 RTT_NOM=3
 RTT_WR=0
+SIM=false
 Synthesis_tool=GowinSynthesis
 USER_FLASH=true
+USER_INTERFACE=Controller
 WRITE_RECOVERY=1
 tCKE=75000
 tDLLK=512
@@ -47,5 +49,3 @@ tRP=12500
 tRRD=7500
 tRTP=7500
 tWTR=7500
-USER_INTERFACE=Controller
-SIM=false

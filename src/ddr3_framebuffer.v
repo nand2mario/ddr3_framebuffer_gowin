@@ -307,9 +307,9 @@ ELVDS_OBUF tmds_bufds [3:0] (
 // And a moving block as test pattern
 
 localparam FB_SIZE = WIDTH * HEIGHT;
-// localparam X_START = (1280-DISP_WIDTH)/2;
-// localparam X_END = (1280+DISP_WIDTH)/2;
 localparam RENDER_DELAY = 74_250_000 * 8 / WIDTH / HEIGHT / 60;   // 32
+localparam PREFETCH_POW = 5;
+localparam PREFETCH_SIZE = 1 << PREFETCH_POW;   // how many pixels to prefetch
 
 reg [7:0] cursor_x, cursor_y;   // a green 8x8 block on grey background for demo
 reg [7:0] cursor_delay;         // 32 cycles per write
@@ -319,8 +319,6 @@ reg write_pixels_ack;
 reg [9:0] wr_x, wr_y;           // write position
 reg [$clog2(FB_SIZE*2)-1:0] wr_addr;
 
-reg read_pixels_req;            // toggle to read 8 pixels
-reg read_pixels_ack;
 reg [$clog2(FB_SIZE*2)-1:0] rd_addr;
 reg prefetch;                   // will start prefetch next cycle
 reg [10:0] prefetch_x;
@@ -328,7 +326,7 @@ reg [$clog2(1280+WIDTH)-1:0] prefetch_x_cnt;
 reg [$clog2(720+HEIGHT)-1:0] prefetch_y_cnt;
 reg [$clog2(FB_SIZE*2)-1:0] prefetch_addr_line;   // current line to prefetch
 
-reg [COLOR_BITS-1:0] pixels [0:31];       // buffer to 32 pixels
+reg [COLOR_BITS-1:0] pixels [0:PREFETCH_SIZE-1];       // buffer to 32 pixels
 reg [$clog2(WIDTH)-1:0] ox;
 reg [$clog2(HEIGHT)-1:0] oy;
 reg [$clog2(1280+WIDTH)-1:0] xcnt;
@@ -360,7 +358,7 @@ always @(posedge clk_x1) begin
 end
 
 always @(posedge clk_x1) begin
-    if (ddr_rst) begin
+    if (ddr_rst | ~init_calib_complete) begin
         wr_x <= 0; wr_y <= 0;
         write_pixels_req <= 0;
     end else begin
@@ -394,7 +392,7 @@ reg [10:0] diff_720_height, diff_disp_width_width;
 reg [10:0] x_prefetch_start;
 
 always @(posedge clk_x1) begin
-    if (ddr_rst) begin
+    if (ddr_rst | ~init_calib_complete) begin
         ox <= 0; oy <= 0; xcnt <= 0; ycnt <= 0;
     end else begin
         // keep original pixel coordinates
@@ -417,7 +415,7 @@ always @(posedge clk_x1) begin
                 xcnt <= xcnt - diff_disp_width_width;
                 ox <= ox + 1;
             end
-            rgb <= torgb(pixels[cx == 0 ? 0 : ox[3:0]]);
+            rgb <= torgb(pixels[cx == 0 ? 0 : ox[PREFETCH_POW-1:0]]);
         end else
             rgb <= 24'h202020;
 
@@ -436,11 +434,11 @@ end
 
 // TODO: wrapping while prefetching is not implemented yet
 always @(posedge clk_x1) begin
-    if (ddr_rst) begin
+    if (ddr_rst | ~init_calib_complete) begin
         prefetch_x <= 0;
     end else begin
         if (cx == 0) begin
-            prefetch_x <= 32;      // We fetch up to prefetch_x
+            prefetch_x <= PREFETCH_SIZE;      // We fetch up to prefetch_x
             prefetch_x_cnt <= fb_width;
             if (cy == 0) begin
                 prefetch_y_cnt <= 0;
@@ -464,15 +462,16 @@ end
 
 reg cmd_done, data_done;
 reg [10:0] read_x;
+wire read_handshake = app_rdy & app_cmd == 3'b001 & app_en;
+wire write_handshake = app_rdy & app_cmd == 3'b000 & app_en;
+wire data_handshake = app_wdf_rdy & app_wdf_wren;
 
 // actual framebuffer DDR3 read/write
 always @(posedge clk_x1) begin
     app_en <= 0;
     app_wdf_wren <= 0;
 
-    if (ddr_rst) begin
-        read_pixels_ack <= read_pixels_req;
-        write_pixels_ack <= write_pixels_req;
+    if (ddr_rst | ~init_calib_complete) begin
         cmd_done <= 0;
         data_done <= 0;
     end else begin
@@ -493,24 +492,21 @@ always @(posedge clk_x1) begin
                 cmd_done <= 0;
                 data_done <= 0;
             end
-        end else if (read_x + 4 <= prefetch_x) begin   // process reads
-            if (app_rdy & ~app_en) begin  
-                app_en <= 1;
-                app_cmd <= 3'b001;
-                app_addr <= {read_x, 1'b0} + prefetch_addr_line;
-                read_pixels_ack <= read_pixels_req;
-                read_x <= read_x + 4;
-            end
+        end else if (read_x + 4 <= prefetch_x && cx < x_end && app_rdy) begin   // process reads
+            app_en <= 1;
+            app_cmd <= 3'b001;
+            app_addr <= {read_x, 1'b0} + prefetch_addr_line;
+            read_x <= read_x + 4;
         end 
 
-        if (cx == x_prefetch_start) read_x <= 0;       // start new line
+        if (cx == 0) read_x <= 0;       // start new line
     end
 end
 
 // receive pixels from DDR3 and write to pixels[] in 8 cycles
-reg [3:0] bram_addr;        // 32 pixels, receive 4 pixels per request
+reg [PREFETCH_POW-1:0] bram_addr;
 always @(posedge clk_x1) begin
-    if (cx == 0)                                    // reset addr before line start
+    if (cx == 0)     // reset addr before line start
         bram_addr <= 0;
 
     if (app_rd_data_valid) begin
