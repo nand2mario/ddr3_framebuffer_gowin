@@ -17,14 +17,15 @@
 //      1650=1280 + 110(front porch) + 40(sync) + 220(back porch)
 //      750 =720  +   5(front porch) +  5(sync)  + 20(back porch)
 //   https://projectf.io/posts/video-timings-vga-720p-1080p/#hd-1280x720-60-hz
-// - Pixels are read from DDR3 32 pixels in advance, as DDR3 controller's read latency 
-//   is about 22 cycles.
-//   x                                0  4  8   ...   WIDTH-36 ... WIDTH
-//   prefetch  0  4  8 12 16 20 24 28 32 36 40        WIDTH-4
+// - Input pixels are written to an async FIFO first, then read from the FIFO in memory
+//   controller clock domain, and written to DDR3 in 4-pixel, 8-beat chunks.
+// - Pixels are read from DDR3 in advance into a sync FIFO, as DDR3 controller's read latency 
+//   is ~35 cycles.
 // - Writes are handled in 4 pixel chunks too. Whenever we have 4 pixels
 //   accumulated, we write them to DDR3. Reading takes precedence over writing.
 //
 // 8/2025: added support for 138K
+// 9/2025: improved performance by batching DDR3 accesses. tested with 25Mhz pixel clock.
 module ddr3_framebuffer #(
     parameter WIDTH = 640,           // multiples of 4
     parameter HEIGHT = 480, 
@@ -609,8 +610,7 @@ endfunction
 
 endmodule
 
-
-// Mostly from: https://log.martinatkins.me/2020/06/07/verilog-async-fifo/
+// Based on: https://log.martinatkins.me/2020/06/07/verilog-async-fifo/
 // Async FIFO implementation
 module async_fifo(
   input                       reset,

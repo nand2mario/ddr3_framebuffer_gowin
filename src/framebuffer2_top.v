@@ -131,6 +131,7 @@ wire [17:0] bg_color = {bg_r, bg_g, bg_b};
 reg [7:0] delay;
 reg [9:0] block_x = 0, block_y = 4;
 reg [9:0] wr_x, wr_y;
+reg [9:0] wr_x_next, wr_y_next;
 reg [15:0] frame_cnt;
 
 //`define FIXED_BLOCK
@@ -155,7 +156,7 @@ localparam BLUE = 18'b000000_000000_111111;
 always @(posedge clk_x1) begin      // could also be clk_g
     if (ddr_rst) begin
         delay <= 3;
-        wr_x <= 0; wr_y <= 0;
+        wr_x_next <= 0; wr_y_next <= 0;
         fb_we <= 0;
     end else if (!overlay) begin
         vsync <= 0;
@@ -163,26 +164,31 @@ always @(posedge clk_x1) begin      // could also be clk_g
         delay <= delay - 1;
 
         // generate vsync
-        if (delay == 1 && wr_x == 639 && wr_y == 479 + 1) begin       
+        if (delay == 1 && wr_x == 620 && wr_y == 479 + 1) begin          // vsync needs to be a few cycles ahead of first pixel, so wr_x = 620
             vsync <= 1;
             frame_cnt <= frame_cnt + 1;
         end
 
         // generate pixel writes and cursor movement
         if (delay == 0 && speed != 0) begin
-            // output pixel
-            wr_x <= wr_x + 1;
-            if (wr_x == 639) begin
-                wr_x <= 0;
-                wr_y <= wr_y + 1;
-                if (wr_y == 479 + 1) 
-                    wr_y <= 0;
+            wr_x <= wr_x_next;
+            wr_y <= wr_y_next;
+            fb_we <= (wr_y_next != 479 + 1);     // last row is blanking
+
+            // Then advance coordinates for the next cycle
+            wr_x_next <= wr_x_next + 1;
+            wr_y_next <= wr_y_next;
+            if (wr_x_next == 639) begin
+                wr_x_next <= 0;
+                if (wr_y_next == 479 + 1)
+                    wr_y_next <= 0;
+                else
+                    wr_y_next <= wr_y_next + 1;
             end
-            fb_we <= (wr_y != 479 + 1);     // last row is blanking
 
             // move block every frame
 `ifndef FIXED_BLOCK
-            if (wr_x == 0 && wr_y == 0) begin 
+            if (wr_x_next == 0 && wr_y_next == 0) begin 
                 block_x <= block_x + 1;
                 if (block_x == 640/8-1) begin
                     block_x <= 0;
@@ -201,7 +207,7 @@ always @(posedge clk_x1) begin      // could also be clk_g
                 end
             end
 `endif
-            delay <= speed + 1;
+            delay <= speed; // + 1;
         end
     end else begin
         overlay_r <= overlay;
