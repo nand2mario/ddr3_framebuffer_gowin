@@ -136,7 +136,7 @@ reg [15:0] frame_cnt;
 //`define FIXED_BLOCK
 
 reg [2:0] pattern;
-reg [1:0] speed = 3;    // 0: no write (static image), 1: write every 3 cycles, 
+reg [1:0] speed = 0;    // 0: no write (static image), 1: write every 3 cycles, 
                         // 2: write every 4 cycles, 3: write every 5 cycles
 
 localparam PATTERN_GRADIENT0 = 0;
@@ -150,8 +150,9 @@ localparam RED = 18'b111111_000000_000000;
 localparam GREEN = 18'b000000_111111_000000;
 localparam BLUE = 18'b000000_000000_111111;
 
-// always @(posedge clk_g) begin           // test use 50Mhz to drive updates
-always @(posedge clk_x1) begin
+// Pixel clock is clock / (speed + 2)
+// So if clock is 74.25Mhz, speed = 1, then pixel clock is ~25Mhz
+always @(posedge clk_x1) begin      // could also be clk_g
     if (ddr_rst) begin
         delay <= 3;
         wr_x <= 0; wr_y <= 0;
@@ -162,9 +163,9 @@ always @(posedge clk_x1) begin
         delay <= delay - 1;
 
         // generate vsync
-        if (delay == 1 && wr_x == 639 && wr_y == 479) begin
-            frame_cnt <= frame_cnt + 1;
+        if (delay == 1 && wr_x == 639 && wr_y == 479 + 1) begin       
             vsync <= 1;
+            frame_cnt <= frame_cnt + 1;
         end
 
         // generate pixel writes and cursor movement
@@ -174,10 +175,10 @@ always @(posedge clk_x1) begin
             if (wr_x == 639) begin
                 wr_x <= 0;
                 wr_y <= wr_y + 1;
-                if (wr_y == 479) 
+                if (wr_y == 479 + 1) 
                     wr_y <= 0;
             end
-            fb_we <= 1;
+            fb_we <= (wr_y != 479 + 1);     // last row is blanking
 
             // move block every frame
 `ifndef FIXED_BLOCK

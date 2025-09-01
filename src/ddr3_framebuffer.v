@@ -43,7 +43,7 @@ module ddr3_framebuffer #(
     input [10:0]        fb_width,    // actual width of the framebuffer
     input [9:0]         fb_height,   // actual height of the framebuffer
     input [10:0]        disp_width,  // display width to upscale to (e.g. 960 for 4:3 aspect ratio, 1080 for 3:2 aspect ratio)
-    input               fb_vsync,    // vertical sync signal
+    input               fb_vsync,    // start of frame signal, on or before the first pixel
     input               fb_we,       // update a pixel and move to next pixel
     input [COLOR_BITS-1:0] fb_data,  // pixel data
 
@@ -304,11 +304,10 @@ ELVDS_OBUF tmds_bufds [3:0] (
 
 /////////////////////////////////////////////////////////////////////
 // 720p Framebuffer
-// And a moving block as test pattern
 
 localparam FB_SIZE = WIDTH * HEIGHT;
 localparam RENDER_DELAY = 74_250_000 * 8 / WIDTH / HEIGHT / 60;   // 32
-localparam PREFETCH_POW = 5;
+localparam PREFETCH_POW = 6;                    // 5: 32 pixels, 6: 64 pixels
 localparam PREFETCH_SIZE = 1 << PREFETCH_POW;   // how many pixels to prefetch
 
 reg [7:0] cursor_x, cursor_y;   // a green 8x8 block on grey background for demo
@@ -326,7 +325,7 @@ reg [$clog2(1280+WIDTH)-1:0] prefetch_x_cnt;
 reg [$clog2(720+HEIGHT)-1:0] prefetch_y_cnt;
 reg [$clog2(FB_SIZE*2)-1:0] prefetch_addr_line;   // current line to prefetch
 
-reg [COLOR_BITS-1:0] pixels [0:PREFETCH_SIZE-1];       // buffer to 32 pixels
+reg [COLOR_BITS-1:0] pixels [0:PREFETCH_SIZE-1];  // prefetch buffer
 reg [$clog2(WIDTH)-1:0] ox;
 reg [$clog2(HEIGHT)-1:0] oy;
 reg [$clog2(1280+WIDTH)-1:0] xcnt;
@@ -336,18 +335,68 @@ reg [$clog2(720+HEIGHT)-1:0] ycnt;
 reg [$clog2(WIDTH)-1:0] b_x;
 reg [$clog2(HEIGHT)-1:0] b_y;
 reg b_vsync_toggle, b_vsync_toggle_r, b_vsync_toggle_rr;
-wire fifo_ready;
-wire [COLOR_BITS-1:0] fifo_data;
-reg [COLOR_BITS-1:0] b_data [0:2];
-asyncfifo #(.BUFFER_ADDR_WIDTH(3), .DATA_WIDTH(COLOR_BITS)) u_asyncfifo (
+wire fifo_can_read;
+wire fifo_can_write;
+wire [4*COLOR_BITS-1:0] fifo_data;
+wire [6:0] fifo_level;  // up to 64 entries (groups)
+reg fifo_read;
+reg fifo_write;
+
+// Group incoming pixels (clk) into 4-pixel words and push to FIFO
+reg [1:0]  wgrp_cnt;                             // 0..3 pixels collected
+reg [4*COLOR_BITS-1:0] wgrp_data;                // packed as {p3,p2,p1,p0}
+reg        wgrp_pending;                         // group ready to write when FIFO can accept
+
+async_fifo #(.BUFFER_ADDR_WIDTH(6), .DATA_WIDTH(4*COLOR_BITS)) u_asyncfifo (
   .reset(ddr_rst),
-  .write_clk(clk), .write(fb_we), .write_data(fb_data), .can_write(),  
-  .read_clk(clk_x1), .read(fifo_ready), .read_data(fifo_data),  .can_read(fifo_ready)
+  .write_clk(clk), .write(fifo_write), .write_data(wgrp_data), .can_write(fifo_can_write),  
+  .read_clk(clk_x1), .read(fifo_read), .read_data(fifo_data),  .can_read(fifo_can_read),
+  .read_available(fifo_level)
 );
 
+reg fb_vsync_r;
 always @(posedge clk) begin
-    if (fb_vsync) begin
+    fb_vsync_r <= fb_vsync;
+    if (fb_vsync & ~fb_vsync_r) begin   // sample vsync rising edge
         b_vsync_toggle <= ~b_vsync_toggle;
+    end
+end
+
+// Assemble 4 pixels per FIFO word (clk domain)
+always @(posedge clk) begin
+    fifo_write <= 1'b0;
+    if (ddr_rst | ~init_calib_complete) begin
+        wgrp_cnt <= 0;
+        wgrp_pending <= 0;
+        wgrp_data <= 0;
+    end else begin
+        // Accept a pixel only if we're not holding a pending group
+        if (fb_we && !wgrp_pending) begin
+            case (wgrp_cnt)
+                2'd0: begin
+                    wgrp_data[COLOR_BITS-1:0] <= fb_data; 
+                    wgrp_cnt <= 2'd1;
+                end
+                2'd1: begin
+                    wgrp_data[2*COLOR_BITS-1:COLOR_BITS] <= fb_data;
+                    wgrp_cnt <= 2'd2;
+                end
+                2'd2: begin
+                    wgrp_data[3*COLOR_BITS-1:2*COLOR_BITS] <= fb_data;
+                    wgrp_cnt <= 2'd3;
+                end
+                2'd3: begin
+                    wgrp_data[4*COLOR_BITS-1:3*COLOR_BITS] <= fb_data;
+                    wgrp_cnt <= 2'd0;
+                    wgrp_pending <= 1'b1; // group ready
+                end
+            endcase
+        end
+        // Try to push the pending group into FIFO
+        if (wgrp_pending && fifo_can_write) begin
+            fifo_write <= 1'b1;
+            wgrp_pending <= 1'b0;
+        end
     end
 end
 
@@ -357,30 +406,58 @@ always @(posedge clk_x1) begin
     b_vsync_toggle_r <= b_vsync_toggle;
 end
 
-always @(posedge clk_x1) begin
+// Batch write control: start when FIFO has >=8 groups (32 pixels); write 8 groups
+reg write_batch_active;
+reg mem_dir_write;              // 1: write mode (suppress read commands)
+reg [3:0] batch_groups_left;    // number of 4-pixel groups left in batch
+wire write_inflight = write_pixels_req ^ write_pixels_ack; // DDR write pending
+wire new_frame = b_vsync_toggle_rr != b_vsync_toggle_r;
+
+always @(posedge clk_x1) begin : write_batch_control
+    fifo_read <= 1'b0;
     if (ddr_rst | ~init_calib_complete) begin
         wr_x <= 0; wr_y <= 0;
         write_pixels_req <= 0;
+        write_batch_active <= 0;
+        mem_dir_write <= 0;
+        batch_groups_left <= 0;
+        
     end else begin
-        if (b_vsync_toggle_rr != b_vsync_toggle_r) begin
+        if (new_frame) begin
             wr_x <= 0; wr_y <= 0;
         end
-        if (fifo_ready) begin
-            // accumulate 4 pixels and send to ddr
-            if (wr_x[1:0] == 3) begin
+
+        // Start a new batch when at least 8 groups are queued
+        if (!write_batch_active && !mem_dir_write && fifo_level >= 7'd8) begin
+            write_batch_active <= 1'b1;
+            mem_dir_write <= 1'b1;   // switch to write mode
+            batch_groups_left <= 4'd8;
+        end
+
+        if (write_batch_active) begin       // write batch_groups_left (8) groups of pixels
+            // If FIFO not empty and no write in flight, issue DDR write using current fifo_data
+            if (fifo_can_read && !write_inflight) begin
                 wr_addr <= {wr_y * WIDTH + {wr_x[9:2], 2'b0}, 1'b0};
-                app_wdf_data <= {(32-COLOR_BITS)'(1'b0), fifo_data, (32-COLOR_BITS)'(1'b0), b_data[2], 
-                                 (32-COLOR_BITS)'(1'b0), b_data[1], (32-COLOR_BITS)'(1'b0), b_data[0]};
-                write_pixels_req <= ~write_pixels_req;      // execute write
-            end else begin
-                b_data[wr_x[1:0]] <= fifo_data;
+                app_wdf_data <= { {(32-COLOR_BITS){1'b0}}, fifo_data[4*COLOR_BITS-1:3*COLOR_BITS],
+                                  {(32-COLOR_BITS){1'b0}}, fifo_data[3*COLOR_BITS-1:2*COLOR_BITS],
+                                  {(32-COLOR_BITS){1'b0}}, fifo_data[2*COLOR_BITS-1:1*COLOR_BITS],
+                                  {(32-COLOR_BITS){1'b0}}, fifo_data[1*COLOR_BITS-1:0] };
+                write_pixels_req <= ~write_pixels_req;
+                fifo_read <= 1'b1;          // advance FIFO to next group
+                batch_groups_left <= batch_groups_left - 1;
+                if (batch_groups_left == 1) write_batch_active <= 0;  // last group
+                // advance framebuffer coordinates by 4 pixels
+                wr_x <= wr_x + 4;
+                if (wr_x + 4 >= fb_width) begin
+                    wr_x <= 0;
+                    wr_y <= wr_y + 1;
+                end
             end
-            // move to next pixel
-            wr_x <= wr_x + 1;
-            if (wr_x + 1 >= fb_width) begin
-                wr_x <= 0;
-                wr_y <= wr_y + 1;
-            end
+        end
+
+        // If batch completed and last write is fully acknowledged, return to read mode
+        if (!write_batch_active && mem_dir_write && !write_inflight) begin
+            mem_dir_write <= 1'b0;
         end
     end
 end
@@ -467,7 +544,7 @@ wire write_handshake = app_rdy & app_cmd == 3'b000 & app_en;
 wire data_handshake = app_wdf_rdy & app_wdf_wren;
 
 // actual framebuffer DDR3 read/write
-always @(posedge clk_x1) begin
+always @(posedge clk_x1) begin : ddr3_rw
     app_en <= 0;
     app_wdf_wren <= 0;
 
@@ -492,7 +569,7 @@ always @(posedge clk_x1) begin
                 cmd_done <= 0;
                 data_done <= 0;
             end
-        end else if (read_x + 4 <= prefetch_x && cx < x_end && app_rdy) begin   // process reads
+        end else if (!mem_dir_write && read_x + 4 <= prefetch_x && cx < x_end && app_rdy) begin   // process reads
             app_en <= 1;
             app_cmd <= 3'b001;
             app_addr <= {read_x, 1'b0} + prefetch_addr_line;
@@ -533,10 +610,9 @@ endfunction
 endmodule
 
 
-
-// From: https://log.martinatkins.me/2020/06/07/verilog-async-fifo/
+// Mostly from: https://log.martinatkins.me/2020/06/07/verilog-async-fifo/
 // Async FIFO implementation
-module asyncfifo(
+module async_fifo(
   input                       reset,
   input                       write_clk,
   input                       write,
@@ -545,7 +621,8 @@ module asyncfifo(
   input                       read_clk,
   input                       read,
   output reg [DATA_WIDTH-1:0] read_data,
-  output reg                  can_read
+  output reg                  can_read,
+  output     [BUFFER_ADDR_WIDTH:0] read_available
 );
     parameter DATA_WIDTH = 16;
     parameter BUFFER_ADDR_WIDTH = 8;
@@ -623,6 +700,20 @@ module asyncfifo(
     // synchronized over here using module write_ptr_grey_sync declared later.
     wire [BUFFER_ADDR_WIDTH:0] write_ptr_grey_r;
 
+    // Convert grey-coded write pointer to binary in read clock domain
+    function [BUFFER_ADDR_WIDTH:0] grey2bin;
+        input [BUFFER_ADDR_WIDTH:0] g;
+        integer i;
+        begin
+            grey2bin[BUFFER_ADDR_WIDTH] = g[BUFFER_ADDR_WIDTH];
+            for (i = BUFFER_ADDR_WIDTH-1; i >= 0; i = i - 1) begin
+                grey2bin[i] = grey2bin[i+1] ^ g[i];
+            end
+        end
+    endfunction
+    wire [BUFFER_ADDR_WIDTH:0] write_ptr_bin_r = grey2bin(write_ptr_grey_r);
+    assign read_available = write_ptr_bin_r - read_ptr;
+
     // Read pointer (and its grey-coded equivalent) increments whenever
     // "read" is set on a clock, as long as our buffer isn't full.
     wire [BUFFER_ADDR_WIDTH:0] next_read_ptr = read_ptr + 1;
@@ -651,7 +742,7 @@ module asyncfifo(
                     read_data <= 0;
                 end
             end else begin
-                can_read = current_can_read;
+                can_read <= current_can_read;
                 if (current_can_read) begin
                     read_data <= buffer[read_addr];
                 end else begin
@@ -702,4 +793,3 @@ module crossdomain #(parameter SIZE = 1) (
     end
 
 endmodule
-
