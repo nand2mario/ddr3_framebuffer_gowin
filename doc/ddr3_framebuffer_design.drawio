@@ -1,0 +1,61 @@
+<mxfile host="Electron" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/28.1.2 Chrome/138.0.7204.243 Electron/37.4.0 Safari/537.36" version="28.1.2">
+  <diagram id="simple" name="Framebuffer Simple">
+    <mxGraphModel dx="1936" dy="1049" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="600" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="EdEoxB5NGOPi5bfrLhsY-1" value="" style="endArrow=none;dashed=1;html=1;rounded=0;" edge="1" parent="1">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="420" y="360" as="sourcePoint" />
+            <mxPoint x="420" y="120" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="reader" value="Pixel Reader" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;verticalAlign=top;" parent="1" vertex="1">
+          <mxGeometry x="710" y="170" width="340" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="writer" value="Pixel Writer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalAlign=top;" parent="1" vertex="1">
+          <mxGeometry x="220" y="170" width="380" height="140" as="geometry" />
+        </mxCell>
+        <mxCell id="sink" value="Framebuffer Sink" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" parent="1" vertex="1">
+          <mxGeometry x="140" y="210" width="170" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="fifo1" value="FIFO1 (async)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" parent="1" vertex="1">
+          <mxGeometry x="340" y="210" width="160" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="e_s_f1" style="endArrow=block;endFill=1;strokeWidth=2;" parent="1" source="sink" target="fifo1" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ddr" value="DDR3 (Controller + PHY)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" parent="1" vertex="1">
+          <mxGeometry x="540" y="200" width="220" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="e_f1_ddr" style="endArrow=block;endFill=1;strokeWidth=2;" parent="1" source="fifo1" target="ddr" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="fifo2" value="FIFO2 (sync)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" parent="1" vertex="1">
+          <mxGeometry x="790" y="210" width="160" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="e_ddr_f2" style="endArrow=block;endFill=1;strokeWidth=2;" parent="1" source="ddr" target="fifo2" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="hdmi_simple" value="HDMI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#cce5ff;strokeColor=#6c8ebf;" parent="1" vertex="1">
+          <mxGeometry x="980" y="210" width="120" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="e_f2_hdmi" style="endArrow=block;endFill=1;strokeWidth=2;" parent="1" source="fifo2" target="hdmi_simple" edge="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="lbl_write" value="Write Path" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;" parent="1" vertex="1">
+          <mxGeometry x="270" y="320" width="300" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="lbl_read" value="Read/Display Path" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;" parent="1" vertex="1">
+          <mxGeometry x="740" y="320" width="300" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="EdEoxB5NGOPi5bfrLhsY-2" value="clk_x1 domain&lt;div&gt;74.25Mhz&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="430" y="130" width="100" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="EdEoxB5NGOPi5bfrLhsY-3" value="user clock&lt;div&gt;domain&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="330" y="130" width="100" height="30" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
